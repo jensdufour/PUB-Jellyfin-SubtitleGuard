@@ -6,6 +6,15 @@
     "name": "SubtitleGuard",
     "overview": "Guard subtitle extraction against incomplete caches.",
     "owner": "jensdufour",
-    "versions": []
+    "versions": [
+      {
+        "version": "0.1.1",
+        "changelog": "SubtitleGuard 0.1.1: guarded subtitle extraction for Jellyfin 12. Requires an explicit source policy and coordinated startup-gate updates where applicable.",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/download/v0.1.1/subtitle-guard_0.1.1.zip",
+        "checksum": "2b0d7ecefc0e23a40ed240b108f29895",
+        "timestamp": "2026-09-13T07:35:51Z"
+      }
+    ]
   }
 ]
