@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/ci.yml
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: subtitle-guard-package
+          path: dist
+      - name: Validate release tag and package checksums
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -cnotmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+              throw 'Release tags must be stable semantic versions such as v0.1.1.'
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $project = [xml](Get-Content SubtitleGuard.csproj -Raw)
+          if ([version]$version -lt [version]'0.1.1' -or $version -cne [string]$project.Project.PropertyGroup.Version) {
+              throw 'Release tag must match the project version and be at least v0.1.1.'
+          }
+          $archiveName = "subtitle-guard_$version.zip"
+          $archive = Join-Path dist $archiveName
+          $sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Content -LiteralPath "$archive.sha256" -Raw).Trim() -cne "$sha256  $archiveName") {
+              throw 'ZIP SHA256 sidecar does not match the release archive.'
+          }
+          $dllName = 'Jellyfin.Plugin.SubtitleGuard.Prototype.dll'
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $archive).Path)
+          try {
+              if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -cne $dllName) {
+                  throw 'Release archive must contain only the plugin DLL.'
+              }
+              $stream = $zip.Entries[0].Open()
+              try { $dllSha256 = (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLowerInvariant() }
+              finally { $stream.Dispose() }
+          } finally { $zip.Dispose() }
+          if ((Get-Content -LiteralPath "dist/subtitle-guard_$version.dll.sha256" -Raw).Trim() -cne "$dllSha256  $dllName") {
+              throw 'DLL SHA256 sidecar does not match the packaged DLL.'
+          }
+          $checksum = (Get-FileHash -LiteralPath $archive -Algorithm MD5).Hash.ToLowerInvariant()
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "checksum=$checksum" >> $env:GITHUB_OUTPUT
+      - name: Create immutable release with verified assets
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release view $env:RELEASE_TAG --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'This release already exists; refusing to replace it.' }
+          $archive = "dist/subtitle-guard_$env:RELEASE_VERSION.zip"
+          gh release create $env:RELEASE_TAG $archive "$archive.sha256" "dist/subtitle-guard_$env:RELEASE_VERSION.dll.sha256" --verify-tag --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed; catalog was not changed.' }
+          $timestamp = gh release view $env:RELEASE_TAG --json publishedAt --jq '.publishedAt'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the published release timestamp.' }
+          "timestamp=$timestamp" >> $env:GITHUB_OUTPUT
+      - name: Check out latest catalog branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: catalog
+          persist-credentials: false
+      - name: Update and push only the catalog manifest
+        shell: pwsh
+        working-directory: catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.package.outputs.version }}
+          RELEASE_CHECKSUM: ${{ steps.package.outputs.checksum }}
+          RELEASE_TIMESTAMP: ${{ steps.release.outputs.timestamp }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./scripts/update-manifest.ps1 -Version $env:RELEASE_VERSION -Checksum $env:RELEASE_CHECKSUM -Timestamp $env:RELEASE_TIMESTAMP
+          git diff --quiet -- manifest.json
+          if ($LASTEXITCODE -eq 0) { return }
+          if ($LASTEXITCODE -ne 1) { throw 'Could not check the catalog change.' }
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit --only --message "Release $env:RELEASE_TAG catalog" -- manifest.json
+          if ($LASTEXITCODE -ne 0) { throw 'Catalog commit failed.' }
+          git -c 'credential.helper=!gh auth git-credential' push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) { throw 'Catalog push failed; do not replace the published release.' }
+      - name: Dispatch catalog Pages publication
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run pages.yml --ref main
+          if ($LASTEXITCODE -ne 0) { throw 'Pages dispatch failed; dispatch pages.yml on main after recovery.' }

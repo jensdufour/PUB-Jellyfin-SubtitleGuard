@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Fetch checksum-pinned official Jellyfin 12 assemblies and FFmpeg 8
+        shell: bash
+        run: |
+          set -euo pipefail
+          export JELLYFIN_BIN="$RUNNER_TEMP/jellyfin-host/usr/lib/jellyfin/bin"
+          echo "JELLYFIN_BIN=$JELLYFIN_BIN" >> "$GITHUB_ENV"
+          curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --max-time 180 \
+            'https://repo.jellyfin.org/ubuntu/pool/main/j/jellyfin/jellyfin-server_12.0+ubu2404_amd64.deb' \
+            --output "$RUNNER_TEMP/jellyfin-server.deb"
+          echo "50f4283b72b2d78196d07718e9a4f2485896daad00909271858c4da7ca078658  $RUNNER_TEMP/jellyfin-server.deb" | sha256sum --check --strict
+          dpkg-deb --extract "$RUNNER_TEMP/jellyfin-server.deb" "$RUNNER_TEMP/jellyfin-host"
+          test -f "$JELLYFIN_BIN/MediaBrowser.MediaEncoding.dll"
+          test -f "$JELLYFIN_BIN/Jellyfin.Api.dll"
+          curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --max-time 180 \
+            'https://repo.jellyfin.org/ubuntu/pool/main/j/jellyfin-ffmpeg/jellyfin-ffmpeg8_8.1.2-4-noble_amd64.deb' \
+            --output "$RUNNER_TEMP/jellyfin-ffmpeg8.deb"
+          echo "f875ffbd4dc6d87236681b2a8bd73783b9a896ecae80cb99f4385e4ad86025b2  $RUNNER_TEMP/jellyfin-ffmpeg8.deb" | sha256sum --check --strict
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "$RUNNER_TEMP/jellyfin-ffmpeg8.deb" iproute2
+          /usr/lib/jellyfin-ffmpeg/ffmpeg -version
+      - name: Build release and verify repeatable DLL-only packaging
+        shell: pwsh
+        run: |
+          $project = [xml](Get-Content SubtitleGuard.csproj -Raw)
+          $version = [string]$project.Project.PropertyGroup.Version
+          if ([version]$version -lt [version]'0.1.1') { throw 'First packaged release must be at least 0.1.1.' }
+          $first = ./scripts/package.ps1 -Version $version -JellyfinBin $env:JELLYFIN_BIN | ConvertFrom-Json
+          $repeat = ./scripts/package.ps1 -Version $version -JellyfinBin $env:JELLYFIN_BIN -NoRestore | ConvertFrom-Json
+          if ($first.Sha256 -ne $repeat.Sha256) { throw 'Package bytes are not reproducible.' }
+          $zip = [IO.Compression.ZipFile]::OpenRead($first.Archive)
+          try {
+              if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -ne 'Jellyfin.Plugin.SubtitleGuard.Prototype.dll') {
+                  throw 'Unexpected release payload.'
+              }
+              $stream = $zip.Entries[0].Open()
+              try {
+                  $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
+                  if ($hash -ne $first.DllSha256) { throw 'Packaged DLL hash does not match.' }
+              } finally { $stream.Dispose() }
+          } finally { $zip.Dispose() }
+      - name: Verify catalog immutability without changing the source catalog
+        shell: pwsh
+        run: |
+          $temporary = Join-Path $env:RUNNER_TEMP ('catalog-check-' + [guid]::NewGuid().ToString('N'))
+          New-Item "$temporary/scripts" -ItemType Directory -Force | Out-Null
+          try {
+              Copy-Item scripts/update-manifest.ps1 "$temporary/scripts/"
+              Copy-Item manifest.template.json "$temporary/manifest.json"
+              & "$temporary/scripts/update-manifest.ps1" -Version 0.1.1 -Checksum ('1' * 32) -Timestamp '2026-09-13T00:00:00Z'
+              $catalog = Get-Content "$temporary/manifest.json" -Raw | ConvertFrom-Json -NoEnumerate
+              if ($catalog[0].versions[0].targetAbi -ne '12.0.0.0' -or $catalog[0].versions[0].version -ne '0.1.1') { throw 'Wrong catalog ABI/version.' }
+              $before = (Get-FileHash "$temporary/manifest.json").Hash
+              & "$temporary/scripts/update-manifest.ps1" -Version 0.1.1 -Checksum ('1' * 32) -Timestamp '2026-09-13T01:00:00Z'
+              $refused = $false
+              try { & "$temporary/scripts/update-manifest.ps1" -Version 0.1.1 -Checksum ('2' * 32) -Timestamp '2026-09-13T00:00:00Z' }
+              catch { $refused = $true }
+              if (-not $refused -or (Get-FileHash "$temporary/manifest.json").Hash -ne $before) { throw 'Catalog immutability failed.' }
+          } finally { Remove-Item $temporary -Recurse -Force }
+      - name: Build synthetic integration harness
+        shell: bash
+        run: dotnet build Tests/Integration.csproj --configuration Release -p:JellyfinBin="$JELLYFIN_BIN"
+      - name: Run synthetic native integration in an isolated network namespace
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo unshare --net -- sh -eu -c '
+            ip link set lo up
+            exec "$1" "$2" "$3" /usr/lib/jellyfin-ffmpeg/ffmpeg
+          ' sh "$(command -v dotnet)" "$GITHUB_WORKSPACE/Tests/bin/Release/net10.0/Integration.dll" "/tmp/subtitle-guard-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: subtitle-guard-package
+          if-no-files-found: error
+          path: |
+            dist/*.zip
+            dist/*.sha256

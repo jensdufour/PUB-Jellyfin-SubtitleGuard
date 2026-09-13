@@ -1,0 +1,52 @@
+name: Publish Catalog
+
+on:
+  push:
+    branches: [main]
+    paths: [manifest.json, .github/workflows/pages.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  pages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Stage catalog only
+        shell: pwsh
+        run: |
+          $catalog = Get-Content manifest.json -Raw | ConvertFrom-Json -NoEnumerate
+          if ($catalog -isnot [array] -or $catalog.Count -ne 1 -or $catalog[0].guid -ne 'a7c9c612-4b77-46ed-9b92-b32b83d2f771') {
+              throw 'Invalid SubtitleGuard catalog.'
+          }
+          foreach ($version in $catalog[0].versions) {
+              if ($version.targetAbi -ne '12.0.0.0' -or $version.checksum -notmatch '^[0-9a-f]{32}$' -or
+                  $version.sourceUrl -cne "https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/download/v$($version.version)/subtitle-guard_$($version.version).zip") {
+                  throw 'Invalid release metadata.'
+              }
+          }
+          New-Item "$env:RUNNER_TEMP/catalog-site" -ItemType Directory -Force | Out-Null
+          Copy-Item manifest.json "$env:RUNNER_TEMP/catalog-site/manifest.json"
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/catalog-site
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
