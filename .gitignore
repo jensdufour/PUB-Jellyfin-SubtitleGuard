@@ -1,8 +1,6 @@
-**/bin/
-**/obj/
+bin/
+obj/
 dist/
-.host/
-.env*
-*.user
-*.suo
 TestResults/
+.vs/
+*.user

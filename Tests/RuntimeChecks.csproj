@@ -5,15 +5,16 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <UseAppHost>false</UseAppHost>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="NativeGuardChecks.cs" />
     <ProjectReference Include="../SubtitleGuard.csproj" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Jellyfin.Controller" Version="12.0.0" />
     <PackageReference Include="libse" Version="4.0.12" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <Reference Include="MediaBrowser.MediaEncoding" HintPath="$(JellyfinBin)/MediaBrowser.MediaEncoding.dll" Private="true" />
-    <Reference Include="Jellyfin.Api" HintPath="$(JellyfinBin)/Jellyfin.Api.dll" Private="true" />
   </ItemGroup>
 </Project>

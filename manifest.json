@@ -1,10 +1,10 @@
 [
   {
     "category": "Subtitles",
-    "description": "Publish subtitle caches only after complete source input and successful extraction. Requires an explicit source policy; does not change video playback.",
+    "description": "Protect Jellyfin 12 native subtitle extraction from incomplete cache reuse. No background extraction or playback scheduling.",
     "guid": "a7c9c612-4b77-46ed-9b92-b32b83d2f771",
     "name": "SubtitleGuard",
-    "overview": "Guard subtitle extraction against incomplete caches.",
+    "overview": "Guard native subtitle extraction against incomplete caches.",
     "owner": "jensdufour",
     "versions": [
       {

@@ -1,93 +1,108 @@
-# Subtitle Guard for Jellyfin
+# Subtitle Guard
 
-Subtitle Guard prevents failed subtitle extraction from being accepted as a
-nonempty, valid cache. It reads provider media, extracts subtitle tracks into a
-private generation, and publishes the generation only after complete input and
-successful extraction. It does not change video playback or fetch subtitles from
-external subtitle providers.
+**0.3.0: a small guard around Jellyfin 12's native subtitle extraction.**
+Two production C# files. No replacement encoder, custom downloader, playback
+queue, configuration page, cache database, proxy or library scan.
 
-## Requirements
+## What It Fixes
 
-- Jellyfin 12.0, .NET 10 and Jellyfin FFmpeg.
-- Linux for production registration and private-file permission checks.
-- Explicit source-origin configuration and a dedicated plugin cache directory.
+Jellyfin's affected native extractor deletes failed output for exit `-1`, but
+can accept other nonzero exits when a subtitle file is nonempty. That can leave
+a file with subtitles through minute 45 reused as though extraction completed.
 
-This release preserves all supplied subtitle languages. Source subtitles that are
-already missing dialogue cannot be repaired by extraction validation. First-use
-extraction may read the entire media file and delay subtitle availability.
+This plugin patches four native methods in memory using Harmony:
 
-## Custom Repository
+1. Map any nonzero FFmpeg exit, or known truncation/error diagnostics, to the
+   native failure path. Keep native extraction, conversions and cleanup.
+2. Write a `.subtitleguard.pending` marker beside each output before extraction.
+   Remove markers only after successful extraction and nonempty expected files.
+3. Refuse marked files as fresh cache entries, including after a crash/restart.
+4. Refuse to serve marked files even when the native outer method swallows an
+   extraction exception. A later request can retry through Jellyfin normally.
 
-The published catalog will be available at:
+No last-cue heuristic: sparse and forced subtitle tracks can legitimately end
+early. Exit/diagnostic checks detect known extraction failures, not a provider
+serving an already truncated but internally valid file.
+
+## Scope
+
+- No new source reads, scheduled work or automatic retry loops. Native subtitle
+  requests still behave as native requests; they can require reading much of a
+  film and are not guaranteed to stop merely because a client closes playback.
+- No pre-play download requirement, post-play queue or playback interlock is
+  added. This fixes incomplete-cache reuse, not progressive subtitle delivery or
+  IPTV connection contention. A player that already loaded an old file may need
+  its subtitle track reselected after repair.
+- Subtitle Extract is not required. It is an optional scheduler around the same
+  native encoder; keep its background schedules off or remove it separately.
+  This plugin does not modify another plugin or its settings.
+- Native cache placement, timeout and stream selection remain Jellyfin-owned.
+  English/Dutch player preferences remain native preferences, not a new hard
+  extraction filter. Existing good caches are not flushed or re-downloaded.
+- No custom state-file capacity or mount checks are needed: only per-output
+  markers use the native cache directory. Cache-write errors affect that
+  extraction, not an unrelated cache database or all completed subtitles.
+
+## Compatibility
+
+Jellyfin exposes no supported callback with the native FFmpeg exit status.
+Harmony is the sole added runtime dependency; it avoids copying the encoder.
+The guard checks Jellyfin major version 12 and all four method signatures before
+patching, and removes its patches if installation fails. It never modifies server
+binaries. Private methods can change: do not assume future releases compatible
+merely because the plugin catalog reports Active.
+
+Local checks exercised actual Jellyfin encoder methods on .NET 10 with simulated
+process results: bad exits, truncation, cancellation, restart markers, successful
+retry and read refusal. No IPTV request or full-movie download was made. A live
+12.1 installation has not been performed; deployment remains deferred.
+
+## Build And Package
+
+Use .NET SDK 10 and a matching Jellyfin 12 release bin directory containing
+MediaBrowser.MediaEncoding.dll. Host DLLs are references, not package contents.
+
+```powershell
+$JellyfinBin = '/path/to/jellyfin/bin'
+dotnet run --project Tests/RuntimeChecks.csproj -c Release "-p:JellyfinBin=$JellyfinBin"
+./scripts/package.ps1 -JellyfinBin $JellyfinBin
+```
+
+The versioned ZIP contains the plugin DLL and `0Harmony.dll` only. The historical
+plugin DLL name is retained for compatibility; use the ZIP contents, not a DLL
+from an older prototype package. The helper prints version and SHA-256.
+
+## Deferred Rollout
+
+Add this repository in Jellyfin and install **SubtitleGuard 0.3.0**:
 
 ```text
 https://jensdufour.github.io/PUB-Jellyfin-SubtitleGuard/manifest.json
 ```
 
-Catalog installation does not configure the required production policy. Complete
-the setup below before restarting Jellyfin. Automatic updates should stay disabled
-when an external startup gate pins the installed DLL hash; update that gate to
-the reviewed release hash before restarting after an upgrade.
+The release workflow builds the native checks and plugin on GitHub, packages
+Harmony with the plugin, publishes the ZIP and updates the hosted catalog.
+Installing the repository package does not require an immediate restart.
 
-## Production Policy
+1. Wait for the current scan/native writers to finish. Back up the previous
+   plugin/configuration and any specifically identified bad native subtitle
+   cache files. Do not clear all subtitles or change media paths.
+2. Install version `0.3.0` from the repository, then leave its restart pending
+   until approved. No settings, environment variables or sandbox marker are
+   required. Old prototype private caches are not imported.
+3. Start Jellyfin and confirm `Subtitle Guard 0.3.0.0: native extraction/cache
+   guards installed` in the current startup log; verify the installed package
+   hash. There is no native-encoder replacement to select in configuration.
+4. Old unmarked caches cannot be retrospectively proven complete. For a cache
+   already known to be truncated, quarantine only that source/track's file with
+   Jellyfin stopped, preserving a backup, then let the next request regenerate
+   it. Do not infer truncation from cue count or the last cue alone.
+5. To roll back, stop Jellyfin and remove the new plugin directory or restore
+   the recorded previous version. Native Jellyfin ignores pending markers, so
+   quarantine any still-marked subtitle outputs with their markers before
+   returning to unguarded extraction. Never delete just a marker to declare a
+   partial file complete. Keep good unmarked native caches untouched.
 
-Create `/var/lib/jellyfin/data/subtitle-guard` owned by the Jellyfin service user
-with mode `0700`. Create `.subtitle-guard-sandbox` and `production-policy.json`
-inside it with mode `0600`, owned by the same user. The marker filename is retained
-for compatibility; production mode is selected by the environment variable below.
-
-```json
-{
-  "CacheRoot": "/var/lib/jellyfin/data/subtitle-guard",
-  "InitialOrigins": ["https://provider.example"],
-  "RedirectOrigins": ["http://media.example"],
-  "MaxBytes": 4294967296,
-  "TimeoutSeconds": 900
-}
-```
-
-Set `SUBTITLE_GUARD_PRODUCTION_POLICY` to the absolute policy-file path in the
-Jellyfin service environment. Do not combine it with sandbox or pilot variables.
-Origins include scheme, host and optional port, with no path, query or credentials.
-HTTPS-to-HTTP redirects are allowed only when the destination is approved.
-HTTPS certificate validation remains enabled. The production path above is the
-currently supported Linux layout; custom data-directory layouts require review.
-
-After startup, check `registration.json` in the cache root against the current
-Jellyfin PID/start time and installed assembly hash. A catalog entry marked Active
-alone is not proof that the guarded encoder is in use. This repository does not
-install a systemd startup gate automatically. Never clear old subtitle caches
-until active guarded registration has been independently verified.
-
-## Limits
-
-Matroska extraction streams into FFmpeg; seek-dependent supported containers use
-a bounded temporary input file that is removed afterward. Text, mov_text-to-SRT
-and PGS paths have integration coverage. DVD output mapping and AVI support have
-less runtime coverage. Bitmap-to-text conversion is not supported.
-
-Extraction is serialized. Defaults are a 4 GiB input limit, 15-minute operation
-deadline, 24-hour freshness and five-minute failure cooldown. Persistent state
-is bounded to 1 MiB and 4,096 entries per category; invalid/excessive state fails
-closed. No background cache-retention job or library-wide prefetch is installed.
-Atomic publication is not a guarantee against every filesystem/power failure.
-
-## Build And Test
-
-Use .NET SDK 10 and matching Jellyfin 12 release assemblies. Supply `JellyfinBin`
-pointing to a directory containing `MediaBrowser.MediaEncoding.dll` and
-`Jellyfin.Api.dll`. Host assemblies are references, not plugin payloads.
-
-```sh
-dotnet build SubtitleGuard.csproj -c Release -p:JellyfinBin=/path/to/jellyfin/bin
-dotnet build Tests/Integration.csproj -c Release -p:JellyfinBin=/path/to/jellyfin/bin
-unshare --net -- sh -c 'ip link set lo up && dotnet Tests/bin/Release/net10.0/Integration.dll /tmp/subtitle-guard-new-test /usr/lib/jellyfin-ffmpeg/ffmpeg'
-```
-
-Tests generate synthetic media. The test directory must be a new direct `/tmp`
-child with the indicated prefix. Do not run integration fixtures against a live
-library or use production directories for test output.
-
-## License
-
-GPL-3.0. Dependencies retain their respective licenses.
+The previous prototype download/policy/queue fixtures were removed. The release
+workflow uses the current native guard checks and includes Harmony in the ZIP.
+Published version `0.1.1` is retained for history, not recommended for this setup.
