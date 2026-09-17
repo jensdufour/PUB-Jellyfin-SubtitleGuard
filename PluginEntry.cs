@@ -1,3 +1,4 @@
+using System.Runtime.Loader;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Controller;
@@ -21,6 +22,16 @@ public sealed class Registrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection services, IServerApplicationHost applicationHost)
     {
+        var assembly = typeof(Registrator).Assembly;
+        if (assembly.IsCollectible)
+        {
+            AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(Path.GetDirectoryName(assembly.Location)!, "0Harmony.dll"));
+            var runtime = AssemblyLoadContext.Default.LoadFromAssemblyPath(assembly.Location);
+            var registrator = (IPluginServiceRegistrator)Activator.CreateInstance(runtime.GetType(typeof(Registrator).FullName!)!)!;
+            registrator.RegisterServices(services, applicationHost);
+            return;
+        }
+
         var guard = new NativeExtractionGuard();
         guard.Install();
         services.AddSingleton(_ => guard);

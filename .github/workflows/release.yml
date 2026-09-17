@@ -28,7 +28,21 @@ jobs:
           dpkg-deb --extract "$RUNNER_TEMP/jellyfin-server.deb" "$RUNNER_TEMP/jellyfin-host"
           echo "JELLYFIN_BIN=$RUNNER_TEMP/jellyfin-host/usr/lib/jellyfin/bin" >> "$GITHUB_ENV"
       - name: Verify native guard
-        run: dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
+        run: |
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --collectible
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
+      - name: Verify Jellyfin 12.1 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --max-time 180 \
+            'https://repo.jellyfin.org/ubuntu/pool/main/j/jellyfin/jellyfin-server_12.1+ubu2404_amd64.deb' \
+            --output "$RUNNER_TEMP/jellyfin-server-12.1.deb"
+          echo "b57edb75243b24c2ef619b62732a51d18ce1b8a0bf2f2bab9be47d1461b424e9  $RUNNER_TEMP/jellyfin-server-12.1.deb" | sha256sum --check --strict
+          dpkg-deb --extract "$RUNNER_TEMP/jellyfin-server-12.1.deb" "$RUNNER_TEMP/jellyfin-host-12.1"
+          cp -a Tests/bin/Release/net10.0 "$RUNNER_TEMP/checks-12.1"
+          cp "$RUNNER_TEMP/jellyfin-host-12.1/usr/lib/jellyfin/bin/"*.dll "$RUNNER_TEMP/checks-12.1/"
+          dotnet "$RUNNER_TEMP/checks-12.1/RuntimeChecks.dll" --collectible
       - name: Package
         id: package
         shell: pwsh

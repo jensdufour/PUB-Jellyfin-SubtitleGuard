@@ -1,6 +1,6 @@
 # Subtitle Guard
 
-**0.3.0: a small guard around Jellyfin 12's native subtitle extraction.**
+**0.3.1: a small guard around Jellyfin 12's native subtitle extraction.**
 Two production C# files. No replacement encoder, custom downloader, playback
 queue, configuration page, cache database, proxy or library scan.
 
@@ -49,13 +49,21 @@ Jellyfin exposes no supported callback with the native FFmpeg exit status.
 Harmony is the sole added runtime dependency; it avoids copying the encoder.
 The guard checks Jellyfin major version 12 and all four method signatures before
 patching, and removes its patches if installation fails. It never modifies server
-binaries. Private methods can change: do not assume future releases compatible
+binaries. Version0.3.0 failed on Jellyfin12.1 because Harmony/MonoMod could not
+generate its proxy in Jellyfin's collectible plugin load context. Version0.3.1
+bootstraps the bundled Harmony and patch runtime in the non-collectible default
+context while retaining normal plugin discovery. The runtime remains loaded until
+server shutdown: installation, update and removal require a full server restart.
+Private methods can change: do not assume future releases compatible
 merely because the plugin catalog reports Active.
 
 Local checks exercised actual Jellyfin encoder methods on .NET 10 with simulated
 process results: bad exits, truncation, cancellation, restart markers, successful
-retry and read refusal. No IPTV request or full-movie download was made. A live
-12.1 installation has not been performed; deployment remains deferred.
+retry and read refusal. The cold collectible-context check invokes the actual plugin
+registrator before exercising the same guard behavior, with no Harmony preloaded
+in the default context. Release CI checks Jellyfin12.0 and12.1 host assemblies.
+No IPTV request or full-movie download is made by these checks. Version0.3.1 live
+activation still requires the explicit startup-log verification below.
 
 ## Build And Package
 
@@ -65,6 +73,7 @@ MediaBrowser.MediaEncoding.dll. Host DLLs are references, not package contents.
 ```powershell
 $JellyfinBin = '/path/to/jellyfin/bin'
 dotnet run --project Tests/RuntimeChecks.csproj -c Release "-p:JellyfinBin=$JellyfinBin"
+dotnet run --project Tests/RuntimeChecks.csproj -c Release "-p:JellyfinBin=$JellyfinBin" -- --collectible
 ./scripts/package.ps1 -JellyfinBin $JellyfinBin
 ```
 
@@ -74,7 +83,7 @@ from an older prototype package. The helper prints version and SHA-256.
 
 ## Deferred Rollout
 
-Add this repository in Jellyfin and install **SubtitleGuard 0.3.0**:
+Add this repository in Jellyfin and install **SubtitleGuard 0.3.1**:
 
 ```text
 https://jensdufour.github.io/PUB-Jellyfin-SubtitleGuard/manifest.json
@@ -87,10 +96,10 @@ Installing the repository package does not require an immediate restart.
 1. Wait for the current scan/native writers to finish. Back up the previous
    plugin/configuration and any specifically identified bad native subtitle
    cache files. Do not clear all subtitles or change media paths.
-2. Install version `0.3.0` from the repository, then leave its restart pending
+2. Install version `0.3.1` from the repository, then leave its restart pending
    until approved. No settings, environment variables or sandbox marker are
    required. Old prototype private caches are not imported.
-3. Start Jellyfin and confirm `Subtitle Guard 0.3.0.0: native extraction/cache
+3. Start Jellyfin and confirm `Subtitle Guard 0.3.1.0: native extraction/cache
    guards installed` in the current startup log; verify the installed package
    hash. There is no native-encoder replacement to select in configuration.
 4. Old unmarked caches cannot be retrospectively proven complete. For a cache

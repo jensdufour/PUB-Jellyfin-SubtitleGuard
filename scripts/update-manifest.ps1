@@ -15,7 +15,7 @@ if ($existing.Count) {
 }
 $entry = [pscustomobject]@{
     version = $Version
-    changelog = "SubtitleGuard ${Version}: lean native extraction/cache guard; no custom downloader, queue or settings. Requires Jellyfin 12 and a restart to activate."
+    changelog = "SubtitleGuard ${Version}: fixes Harmony startup in Jellyfin's collectible plugin loader. Native extraction/cache guards retained; no downloader, queue or settings. Requires Jellyfin 12 and a restart to activate."
     targetAbi = '12.0.0.0'
     sourceUrl = "https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/download/v$Version/subtitle-guard_$Version.zip"
     checksum = $Checksum
