@@ -1,10 +1,10 @@
 [
   {
     "category": "Subtitles",
-    "description": "Protect Jellyfin 12 native subtitle extraction from incomplete cache reuse. No background extraction or playback scheduling.",
+    "description": "Protect Jellyfin 12 native subtitle caches, with optional bounded remote ASS preparation for native HLS burn-in.",
     "guid": "a7c9c612-4b77-46ed-9b92-b32b83d2f771",
     "name": "SubtitleGuard",
-    "overview": "Guard native subtitle extraction against incomplete caches.",
+    "overview": "Guard native subtitle caches and optionally prepare remote ASS burn-in windows.",
     "owner": "jensdufour",
     "versions": [
       {

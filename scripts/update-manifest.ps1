@@ -15,7 +15,7 @@ if ($existing.Count) {
 }
 $entry = [pscustomobject]@{
     version = $Version
-    changelog = "SubtitleGuard ${Version}: fixes Harmony startup in Jellyfin's collectible plugin loader. Native extraction/cache guards retained; no downloader, queue or settings. Requires Jellyfin 12 and a restart to activate."
+    changelog = "SubtitleGuard ${Version}: opt-in bounded remote ASS preparation for native HLS burn-in on Linux. Existing incomplete-cache guards retained. Set SUBTITLEGUARD_WINDOWED_ASS=1 to enable for all users; unsupported or failed preparation falls back to guarded native extraction. Requires Jellyfin 12 and a full restart."
     targetAbi = '12.0.0.0'
     sourceUrl = "https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/download/v$Version/subtitle-guard_$Version.zip"
     checksum = $Checksum

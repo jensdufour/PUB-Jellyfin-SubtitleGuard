@@ -9,7 +9,7 @@ namespace SubtitleGuard;
 public sealed class NativeExtractionGuard : IDisposable
 {
     private const string PatchId = "jensdufour.subtitleguard.native-extraction";
-    private const string PendingSuffix = ".subtitleguard.pending";
+    internal const string PendingSuffix = ".subtitleguard.pending";
     private readonly Harmony _patches = new(PatchId);
 
     public void Install()

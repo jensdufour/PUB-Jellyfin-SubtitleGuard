@@ -16,8 +16,71 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SubtitleGuard;
 
+if (args.Length == 2 && args[0] == "--window-contract")
+{
+    await CheckWindowContract(args[1]);
+    return;
+}
+
 await using var registered = args.Contains("--collectible") ? await RegisterCollectible() : null;
 await CheckNativeBehavior(registered is not null);
+
+static async Task CheckWindowContract(string ffmpeg)
+{
+    var root = Path.Combine(Path.GetTempPath(), "subtitleguard-contract-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    try
+    {
+        var source = Path.Combine(root, "source.mkv");
+        var subtitles = Path.Combine(root, "source.ass");
+        await File.WriteAllTextAsync(subtitles, """
+            [Script Info]
+            ScriptType: v4.00+
+            PlayResX: 160
+            PlayResY: 90
+            [V4+ Styles]
+            Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+            Style: Default,DejaVu Sans,16,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1
+            [Events]
+            Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+            Dialogue: 0,0:00:02.50,0:00:04.50,Default,,0,0,0,,BOUNDARY
+            Dialogue: 0,0:00:05.00,0:00:07.00,Default,,0,0,0,,LATER
+            """ + "\n");
+        await Run(["-f", "lavfi", "-i", "color=c=black:s=160x90:r=10:d=12", "-i", subtitles,
+            "-map", "0:v:0", "-map", "1:s:0", "-c:v", "ffv1", "-g", "30", "-c:s", "ass", "-t", "12", source]);
+        var type = typeof(NativeExtractionGuard).Assembly.GetType("SubtitleGuard.AssWindowCache", throwOnError: true)!;
+        var cache = Activator.CreateInstance(type, [ffmpeg, root, CancellationToken.None])!;
+        var extract = type.GetMethod("ExtractAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var first = Path.Combine(root, "first.ass");
+        await (Task)extract.Invoke(cache, [source, 1, 0, new Dictionary<string, string>(), 0L, TimeSpan.FromSeconds(3).Ticks, false, first, CancellationToken.None])!;
+        var firstText = await File.ReadAllTextAsync(first);
+        Check(firstText.Contains("0:00:02.50,0:00:04.50", StringComparison.Ordinal), "bounded extraction preserves crossing-cue timestamps");
+        Check(!firstText.Contains("LATER", StringComparison.Ordinal), "input duration does not read future subtitle windows");
+        var second = Path.Combine(root, "second.ass");
+        await (Task)extract.Invoke(cache, [source, 1, 0, new Dictionary<string, string>(), TimeSpan.FromSeconds(3).Ticks, TimeSpan.FromSeconds(6).Ticks, false, second, CancellationToken.None])!;
+        Check((await File.ReadAllTextAsync(second)).Contains("0:00:05.00,0:00:07.00", StringComparison.Ordinal), "seeked extraction keeps absolute ASS times and proves video coverage");
+        var video = await Run(["-ss", "3", "-copyts", "-i", source, "-map", "0:v:0", "-c:v", "rawvideo",
+            "-start_at_zero", "-to", "6", "-f", "framecrc", "pipe:1"]);
+        var frames = video.Split('\n').Count(line => line.StartsWith("0,", StringComparison.Ordinal));
+        Check(frames == 30, $"absolute output end caps a seeked burn-in job at three seconds ({frames} frames)");
+        Console.WriteLine("Window preparation FFmpeg contract passed; synthetic local media only.");
+
+        async Task<string> Run(string[] arguments)
+        {
+            var info = new System.Diagnostics.ProcessStartInfo(ffmpeg) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            foreach (var argument in new[] { "-hide_banner", "-loglevel", "error", "-nostdin", "-y" }.Concat(arguments)) info.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(info)!;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var errors = process.StandardError.ReadToEndAsync(timeout.Token);
+            try { await Task.WhenAll(output, errors, process.WaitForExitAsync(timeout.Token)); }
+            finally { if (!process.HasExited) { process.Kill(true); await process.WaitForExitAsync(); } }
+            if (process.ExitCode != 0 || (await errors).Length > 0) throw new IOException("Synthetic FFmpeg contract command failed.");
+            return await output;
+        }
+    }
+    finally { Directory.Delete(root, true); }
+}
 
 static async Task<ServiceProvider> RegisterCollectible()
 {

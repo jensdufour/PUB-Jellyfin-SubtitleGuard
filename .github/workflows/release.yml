@@ -31,6 +31,7 @@ jobs:
         run: |
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --collectible
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --window-contract "$(command -v ffmpeg)"
       - name: Verify Jellyfin 12.1 runtime
         shell: bash
         run: |

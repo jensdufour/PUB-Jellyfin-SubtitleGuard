@@ -15,7 +15,7 @@ public sealed class Plugin(IApplicationPaths paths, IXmlSerializer serializer) :
 {
     public override Guid Id => new("a7c9c612-4b77-46ed-9b92-b32b83d2f771");
     public override string Name => "Subtitle Guard";
-    public override string Description => "Prevents failed native subtitle extraction from becoming a reusable cache.";
+    public override string Description => "Guards native subtitle caches and optionally prepares bounded remote ASS windows for native HLS burn-in.";
 }
 
 public sealed class Registrator : IPluginServiceRegistrator
@@ -36,6 +36,7 @@ public sealed class Registrator : IPluginServiceRegistrator
         guard.Install();
         services.AddSingleton(_ => guard);
         services.AddHostedService<GuardStatus>();
+        services.AddHostedService<WindowedBurnIn>();
     }
 }
 
