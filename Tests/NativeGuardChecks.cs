@@ -49,10 +49,16 @@ static async Task CheckWindowContract(string ffmpeg)
         await Run(["-f", "lavfi", "-i", "color=c=black:s=160x90:r=10:d=12", "-i", subtitles,
             "-map", "0:v:0", "-map", "1:s:0", "-c:v", "ffv1", "-g", "30", "-c:s", "ass", "-t", "12", source]);
         var type = typeof(NativeExtractionGuard).Assembly.GetType("SubtitleGuard.AssWindowCache", throwOnError: true)!;
-        var cache = Activator.CreateInstance(type, [ffmpeg, root, CancellationToken.None])!;
+        var resolvedEncoder = string.Empty;
+        var pathReads = 0;
+        Func<string> encoderPath = () => { pathReads++; return resolvedEncoder; };
+        var cache = Activator.CreateInstance(type, [encoderPath, root, CancellationToken.None])!;
+        Check(pathReads == 0, "cache construction does not read the encoder path before native startup");
+        resolvedEncoder = ffmpeg;
         var extract = type.GetMethod("ExtractAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         var first = Path.Combine(root, "first.ass");
         await (Task)extract.Invoke(cache, [source, 1, 0, new Dictionary<string, string>(), 0L, TimeSpan.FromSeconds(3).Ticks, false, first, CancellationToken.None])!;
+        Check(pathReads == 1, "preparation resolves the initialized native encoder path on demand");
         var firstText = await File.ReadAllTextAsync(first);
         Check(firstText.Contains("0:00:02.50,0:00:04.50", StringComparison.Ordinal), "bounded extraction preserves crossing-cue timestamps");
         Check(!firstText.Contains("LATER", StringComparison.Ordinal), "input duration does not read future subtitle windows");

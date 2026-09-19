@@ -1,6 +1,6 @@
 # Subtitle Guard
 
-**0.4.1: native subtitle-cache guards with optional windowed ASS burn-in.**
+**0.4.2: native subtitle-cache guards with optional windowed ASS burn-in.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
@@ -20,6 +20,12 @@ account policies or personal language preferences. With the switch absent, only
 the existing four incomplete-cache guards run. Startup must explicitly report
 `windowed remote ASS burn-in enabled for all users`; an unsupported hook signature
 or missing prerequisite leaves windowed mode inactive and the original guards on.
+
+Version0.4.2 resolves FFmpeg's path at preparation time, after native initialization.
+In0.4.1 the hosted-service startup check ran too early and left windowed mode off;
+the original guards remained active. The focused contract now covers lazy path
+resolution. Version0.4.0 was not packaged because its CI FFmpeg prerequisite was
+missing;0.4.1 corrected the build prerequisite, not this startup ordering.
 
 For embedded ASS/SSA over HTTP(S), requested as burn-in through native VOD HLS:
 
@@ -172,7 +178,7 @@ streaming implementation needs a different packet-fed rendering path or complete
 subtitle windows with segment-by-segment transcoding, plus seek, synchronization,
 interruption and client acceptance tests. The isolated segmented prototype above
 explores the latter approach; no production architecture is implemented or proven
-by these experiments. The optional0.4.1 adapter above is a separate implementation.
+by these experiments. The optional0.4.2 adapter above is a separate implementation.
 
 ## What It Fixes
 
@@ -257,7 +263,7 @@ from an older prototype package. The helper prints version and SHA-256.
 
 ## Repository Rollout
 
-Add this repository in Jellyfin and install **SubtitleGuard 0.4.1**:
+Add this repository in Jellyfin and install **SubtitleGuard 0.4.2**:
 
 ```text
 https://jensdufour.github.io/PUB-Jellyfin-SubtitleGuard/manifest.json
@@ -270,10 +276,10 @@ Installing the repository package does not require an immediate restart.
 1. Wait for the current scan/native writers to finish. Back up the previous
    plugin/configuration and any specifically identified bad native subtitle
    cache files. Do not clear all subtitles or change media paths.
-2. Install version `0.4.1` from the repository, then leave its restart pending
+2. Install version `0.4.2` from the repository, then leave its restart pending
    until approved. The windowed-mode environment switch is optional; the original
    guards need no settings. Old prototype private caches are not imported.
-3. Start Jellyfin and confirm `Subtitle Guard 0.4.1.0: native extraction/cache
+3. Start Jellyfin and confirm `Subtitle Guard 0.4.2.0: native extraction/cache
    guards installed` in the current startup log; verify the installed package
    hash. If opted in, separately require the windowed burn-in enabled message.
    There is no native-encoder replacement to select in configuration.

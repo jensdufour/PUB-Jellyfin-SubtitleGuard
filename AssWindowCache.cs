@@ -5,7 +5,7 @@ using System.Text;
 
 namespace SubtitleGuard;
 
-internal sealed class AssWindowCache(string encoderPath, string root, CancellationToken stopping)
+internal sealed class AssWindowCache(Func<string> encoderPath, string root, CancellationToken stopping)
 {
     private const long MaximumBytes = 8 * 1024 * 1024;
     private readonly Dictionary<string, SourceState> _sources = [];
@@ -161,7 +161,9 @@ internal sealed class AssWindowCache(string encoderPath, string root, Cancellati
     private async Task ExtractAsync(string source, int subtitleIndex, int videoIndex, IReadOnlyDictionary<string, string> headers,
         long startTicks, long endTicks, bool finalWindow, string output, CancellationToken cancellationToken)
     {
-        var start = new ProcessStartInfo(encoderPath)
+        var binary = encoderPath();
+        if (!File.Exists(binary)) throw new IOException("Native FFmpeg is unavailable.");
+        var start = new ProcessStartInfo(binary)
         {
             UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
         };

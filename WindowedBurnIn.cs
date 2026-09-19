@@ -43,10 +43,9 @@ internal sealed class WindowedBurnIn(IServiceProvider services, ILogger<Windowed
                 || !typeof(EncodingJobInfo).IsAssignableFrom(command.GetParameters()[1].ParameterType)
                 || !typeof(EncodingJobInfo).IsAssignableFrom(video.GetParameters()[0].ParameterType))
                 throw new NotSupportedException("Unsupported native HLS method signatures.");
-            if (!File.Exists(encoder.EncoderPath)) throw new IOException("Native FFmpeg is unavailable.");
             var root = Path.Combine(paths.CachePath, "subtitleguard-windows", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            _cache = new AssWindowCache(encoder.EncoderPath, root, _stopping.Token);
+            _cache = new AssWindowCache(() => encoder.EncoderPath, root, _stopping.Token);
             _active = this;
             _patches.Patch(video, postfix: Hook(nameof(LimitOutput)));
             _patches.Patch(command, prefix: Hook(nameof(Prepare)), finalizer: Hook(nameof(Restore)));
