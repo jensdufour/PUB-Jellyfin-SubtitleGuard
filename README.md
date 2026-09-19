@@ -1,6 +1,6 @@
 # Subtitle Guard
 
-**0.4.0: native subtitle-cache guards with optional windowed ASS burn-in.**
+**0.4.1: native subtitle-cache guards with optional windowed ASS burn-in.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
@@ -172,7 +172,7 @@ streaming implementation needs a different packet-fed rendering path or complete
 subtitle windows with segment-by-segment transcoding, plus seek, synchronization,
 interruption and client acceptance tests. The isolated segmented prototype above
 explores the latter approach; no production architecture is implemented or proven
-by these experiments. The optional0.4.0 adapter above is a separate implementation.
+by these experiments. The optional0.4.1 adapter above is a separate implementation.
 
 ## What It Fixes
 
@@ -257,7 +257,7 @@ from an older prototype package. The helper prints version and SHA-256.
 
 ## Repository Rollout
 
-Add this repository in Jellyfin and install **SubtitleGuard 0.4.0**:
+Add this repository in Jellyfin and install **SubtitleGuard 0.4.1**:
 
 ```text
 https://jensdufour.github.io/PUB-Jellyfin-SubtitleGuard/manifest.json
@@ -270,10 +270,10 @@ Installing the repository package does not require an immediate restart.
 1. Wait for the current scan/native writers to finish. Back up the previous
    plugin/configuration and any specifically identified bad native subtitle
    cache files. Do not clear all subtitles or change media paths.
-2. Install version `0.4.0` from the repository, then leave its restart pending
+2. Install version `0.4.1` from the repository, then leave its restart pending
    until approved. The windowed-mode environment switch is optional; the original
    guards need no settings. Old prototype private caches are not imported.
-3. Start Jellyfin and confirm `Subtitle Guard 0.4.0.0: native extraction/cache
+3. Start Jellyfin and confirm `Subtitle Guard 0.4.1.0: native extraction/cache
    guards installed` in the current startup log; verify the installed package
    hash. If opted in, separately require the windowed burn-in enabled message.
    There is no native-encoder replacement to select in configuration.
