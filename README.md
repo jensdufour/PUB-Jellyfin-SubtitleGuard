@@ -1,6 +1,6 @@
 # Subtitle Guard
 
-**0.4.3 candidate: native subtitle-cache guards with one bounded transport retry
+**0.4.3: native subtitle-cache guards with one bounded transport retry
 and optional windowed ASS burn-in.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
@@ -18,8 +18,9 @@ attempt still follow the existing rejection and cleanup path.
 This closes the observed Web failure where the selector remained checked after a
 transient remote read ended early and the first subtitle response failed. It adds
 no background job, prefetch, loop or playback-policy change. A retry can still take
-as long as another native source read. This candidate is not published or installed;
-CT110 remains on0.4.2 until a separately approved idle deployment.
+as long as another native source read. GitHub Actions published0.4.3 after Jellyfin
+12.0/12.1, collectible-loader and FFmpeg contract checks; CT110 then activated the
+repository package in one idle restart with its existing windowed mode retained.
 
 ## Optional Native HLS Preparation
 
@@ -282,9 +283,9 @@ from an older prototype package. The helper prints version and SHA-256.
 
 ## Repository Rollout
 
-The published production version remains **SubtitleGuard0.4.2**. This source tree
-is an unreleased0.4.3 candidate; do not install it until the release workflow has
-published the matching immutable package and catalog entry.
+The published production version is **SubtitleGuard0.4.3**. GitHub Release and the
+hosted catalog provide the checksum-verified package; CT110 runs that repository
+package with the optional windowed mode enabled.
 
 Repository URL:
 
