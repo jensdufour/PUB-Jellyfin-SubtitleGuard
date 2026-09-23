@@ -10,6 +10,7 @@ public sealed class NativeExtractionGuard : IDisposable
 {
     private const string PatchId = "jensdufour.subtitleguard.native-extraction";
     internal const string PendingSuffix = ".subtitleguard.pending";
+    private static readonly AsyncLocal<bool> RetryingProcess = new();
     private readonly Harmony _patches = new(PatchId);
 
     public void Install()
@@ -77,18 +78,40 @@ public sealed class NativeExtractionGuard : IDisposable
         foreach (var path in paths) File.Delete(PendingPath(path));
     }
 
-    private static void ProcessFinished(ref Task<(int ExitCode, string StandardError)> __result) => __result = ValidateProcessAsync(__result);
+    private static void ProcessFinished(SubtitleEncoder __instance, string __0, CancellationToken __1, MethodBase __originalMethod,
+        ref Task<(int ExitCode, string StandardError)> __result) =>
+        __result = ValidateProcessAsync(__instance, __0, __1, __originalMethod, __result, !RetryingProcess.Value);
 
-    private static async Task<(int ExitCode, string StandardError)> ValidateProcessAsync(Task<(int ExitCode, string StandardError)> process)
+    private static async Task<(int ExitCode, string StandardError)> ValidateProcessAsync(SubtitleEncoder encoder, string arguments,
+        CancellationToken cancellationToken, MethodBase processMethod, Task<(int ExitCode, string StandardError)> process, bool allowRetry)
     {
         var result = await process.ConfigureAwait(false);
-        var failed = result.ExitCode != 0 || new[]
+        if (!Failed(result)) return result;
+        if (!allowRetry || cancellationToken.IsCancellationRequested || !Retryable(result.StandardError))
+            return (-1, result.StandardError);
+
+        RetryingProcess.Value = true;
+        try
+        {
+            var retry = (Task<(int ExitCode, string StandardError)>)processMethod.Invoke(encoder, [arguments, cancellationToken])!;
+            return await retry.ConfigureAwait(false);
+        }
+        finally
+        {
+            RetryingProcess.Value = false;
+        }
+    }
+
+    private static bool Failed((int ExitCode, string StandardError) result) => result.ExitCode != 0 || new[]
         {
             "File ended prematurely", "Stream ends prematurely", "Error during demuxing",
             "Input/output error", "Connection reset by peer", "[error]", "[fatal]"
         }.Any(message => result.StandardError.Contains(message, StringComparison.OrdinalIgnoreCase));
-        return failed ? (-1, result.StandardError) : result;
-    }
+
+    private static bool Retryable(string standardError) => new[]
+        {
+            "File ended prematurely", "Stream ends prematurely", "Input/output error", "Connection reset by peer"
+        }.Any(message => standardError.Contains(message, StringComparison.OrdinalIgnoreCase));
 
     private static void CheckReadable(ref Task<SubtitleEncoder.SubtitleInfo> __result) => __result = ReadCompletedAsync(__result);
 

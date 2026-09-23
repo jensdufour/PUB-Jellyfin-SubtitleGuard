@@ -145,6 +145,13 @@ static async Task CheckNativeBehavior(bool registered)
         Check(outputs.All(File.Exists) && outputs.All(path => !File.Exists(path + ".subtitleguard.pending")), "successful native extraction publishes all tracks");
         Check((bool)fresh.Invoke(encoder, [outputs[0], "https://example.invalid/movie.mkv"])!, "completed native cache remains reusable");
 
+        var callsBeforeRetry = Simulation.ProcessCalls;
+        Simulation.Results.Enqueue(Task.FromResult((0, "Stream ends prematurely")));
+        Simulation.Results.Enqueue(Task.FromResult((0, string.Empty)));
+        await Extract();
+        Check(Simulation.ProcessCalls == callsBeforeRetry + 2, "transient native extraction retries exactly once");
+        Check(outputs.All(path => !File.Exists(path + ".subtitleguard.pending")), "successful retry publishes completed native tracks");
+
         foreach (var result in new[] { (1, "decoder failure"), (255, "interrupted"), (0, "File ended prematurely"), (0, "Stream ends prematurely"), (0, "Connection reset by peer") })
         {
             Simulation.Result = Task.FromResult(result);
@@ -202,10 +209,13 @@ public static class Simulation
 {
     public static string[] Paths { get; set; } = [];
     public static Task<(int, string)> Result { get; set; } = Task.FromResult((0, string.Empty));
+    public static Queue<Task<(int, string)>> Results { get; } = new();
+    public static int ProcessCalls { get; set; }
     public static bool Process(ref Task<(int, string)> __result)
     {
+        ProcessCalls++;
         foreach (var path in Paths) File.WriteAllText(path, "1\n00:00:01,000 --> 00:00:02,000\nPartial or complete fixture\n");
-        __result = Result;
+        __result = Results.Count > 0 ? Results.Dequeue() : Result;
         return false;
     }
     public static bool Read(ref Task<SubtitleEncoder.SubtitleInfo> __result)

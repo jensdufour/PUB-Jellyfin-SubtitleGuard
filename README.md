@@ -1,9 +1,25 @@
 # Subtitle Guard
 
-**0.4.2: native subtitle-cache guards with optional windowed ASS burn-in.**
+**0.4.3 candidate: native subtitle-cache guards with one bounded transport retry
+and optional windowed ASS burn-in.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
+
+## Sequential Native Extraction Retry
+
+Version0.4.3 retries Jellyfin's native FFmpeg extraction process exactly once when
+stderr reports a premature stream end, input/output error or connection reset.
+The retry is sequential, uses the same native arguments and cancellation token,
+and keeps the pending marker in place until every expected output is nonempty.
+Permanent decoder failures, generic nonzero exits, cancellation and a failed second
+attempt still follow the existing rejection and cleanup path.
+
+This closes the observed Web failure where the selector remained checked after a
+transient remote read ended early and the first subtitle response failed. It adds
+no background job, prefetch, loop or playback-policy change. A retry can still take
+as long as another native source read. This candidate is not published or installed;
+CT110 remains on0.4.2 until a separately approved idle deployment.
 
 ## Optional Native HLS Preparation
 
@@ -189,12 +205,13 @@ a file with subtitles through minute 45 reused as though extraction completed.
 The always-on cache guard patches four native methods in memory using Harmony;
 the opt-in preparation adapter adds the two HLS command hooks described above:
 
-1. Map any nonzero FFmpeg exit, or known truncation/error diagnostics, to the
+1. Retry once when FFmpeg reports a known transient transport truncation.
+2. Map any remaining nonzero FFmpeg exit, or known truncation/error diagnostics, to the
    native failure path. Keep native extraction, conversions and cleanup.
-2. Write a `.subtitleguard.pending` marker beside each output before extraction.
+3. Write a `.subtitleguard.pending` marker beside each output before extraction.
    Remove markers only after successful extraction and nonempty expected files.
-3. Refuse marked files as fresh cache entries, including after a crash/restart.
-4. Refuse to serve marked files even when the native outer method swallows an
+4. Refuse marked files as fresh cache entries, including after a crash/restart.
+5. Refuse to serve marked files even when the native outer method swallows an
    extraction exception. A later request can retry through Jellyfin normally.
 
 No last-cue heuristic: sparse and forced subtitle tracks can legitimately end
@@ -205,9 +222,10 @@ serving an already truncated but internally valid file.
 
 These guarantees describe the default mode with windowed preparation disabled.
 
-- No new source reads, scheduled work or automatic retry loops. Native subtitle
-  requests still behave as native requests; they can require reading much of a
-  film and are not guaranteed to stop merely because a client closes playback.
+- A known transport truncation can trigger one immediate sequential source re-read
+   inside the same native request. There is no background extraction, schedule or
+   retry loop. Native requests can still require reading much of a film and are not
+   guaranteed to stop merely because a client closes playback.
 - No pre-play download requirement, post-play queue or playback interlock is
   added. This fixes incomplete-cache reuse, not progressive subtitle delivery or
   IPTV connection contention. A player that already loaded an old file may need
@@ -237,8 +255,9 @@ Private methods can change: do not assume future releases compatible
 merely because the plugin catalog reports Active.
 
 Local checks exercised actual Jellyfin encoder methods on .NET 10 with simulated
-process results: bad exits, truncation, cancellation, restart markers, successful
-retry and read refusal. The cold collectible-context check invokes the actual plugin
+process results: bad exits, truncation, cancellation, restart markers, a transient
+first-failure/second-success retry and read refusal. The cold collectible-context
+check invokes the actual plugin
 registrator before exercising the same guard behavior, with no Harmony preloaded
 in the default context. Release CI checks Jellyfin12.0 and12.1 host assemblies.
 No IPTV request or full-movie download is made by these checks. Version0.3.1 live
@@ -263,7 +282,11 @@ from an older prototype package. The helper prints version and SHA-256.
 
 ## Repository Rollout
 
-Add this repository in Jellyfin and install **SubtitleGuard 0.4.2**:
+The published production version remains **SubtitleGuard0.4.2**. This source tree
+is an unreleased0.4.3 candidate; do not install it until the release workflow has
+published the matching immutable package and catalog entry.
+
+Repository URL:
 
 ```text
 https://jensdufour.github.io/PUB-Jellyfin-SubtitleGuard/manifest.json
@@ -276,10 +299,10 @@ Installing the repository package does not require an immediate restart.
 1. Wait for the current scan/native writers to finish. Back up the previous
    plugin/configuration and any specifically identified bad native subtitle
    cache files. Do not clear all subtitles or change media paths.
-2. Install version `0.4.2` from the repository, then leave its restart pending
-   until approved. The windowed-mode environment switch is optional; the original
-   guards need no settings. Old prototype private caches are not imported.
-3. Start Jellyfin and confirm `Subtitle Guard 0.4.2.0: native extraction/cache
+2. Install the published version matching `SubtitleGuard.csproj`, then leave its
+   restart pending until approved. The windowed-mode environment switch is optional;
+   the original guards need no settings. Old prototype private caches are not imported.
+3. Start Jellyfin and confirm the matching `Subtitle Guard <version>.0: native extraction/cache
    guards installed` in the current startup log; verify the installed package
    hash. If opted in, separately require the windowed burn-in enabled message.
    There is no native-encoder replacement to select in configuration.

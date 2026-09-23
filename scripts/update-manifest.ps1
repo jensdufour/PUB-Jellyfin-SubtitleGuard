@@ -15,7 +15,7 @@ if ($existing.Count) {
 }
 $entry = [pscustomobject]@{
     version = $Version
-    changelog = "SubtitleGuard ${Version}: opt-in bounded remote ASS preparation for native HLS burn-in on Linux. Existing incomplete-cache guards retained. Set SUBTITLEGUARD_WINDOWED_ASS=1 to enable for all users; unsupported or failed preparation falls back to guarded native extraction. Requires Jellyfin 12 and a full restart."
+    changelog = "SubtitleGuard ${Version}: retries one transient native subtitle transport failure before rejecting incomplete output. Optional bounded remote ASS preparation and existing cache guards remain. Set SUBTITLEGUARD_WINDOWED_ASS=1 to enable windowed burn-in for all users. Requires Jellyfin 12 and a full restart."
     targetAbi = '12.0.0.0'
     sourceUrl = "https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/download/v$Version/subtitle-guard_$Version.zip"
     checksum = $Checksum
