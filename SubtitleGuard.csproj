@@ -5,14 +5,15 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>Jellyfin.Plugin.SubtitleGuard.Prototype</AssemblyName>
-    <Version>0.4.3</Version>
+    <Version>0.4.4</Version>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
-    <PackageReference Include="Jellyfin.Controller" Version="12.0.0" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Controller" Version="12.0.0" ExcludeAssets="runtime" Condition="'$(NativeHostChecks)' != 'true'" />
+    <Reference Include="$(JellyfinBin)/MediaBrowser*.dll;$(JellyfinBin)/Jellyfin*.dll" Private="true" Condition="'$(NativeHostChecks)' == 'true'" />
     <PackageReference Include="Lib.Harmony" Version="2.4.2" />
-    <Reference Include="MediaBrowser.MediaEncoding" HintPath="$(JellyfinBin)/MediaBrowser.MediaEncoding.dll" Private="false" />
+    <Reference Include="MediaBrowser.MediaEncoding" HintPath="$(JellyfinBin)/MediaBrowser.MediaEncoding.dll" Private="false" Condition="'$(NativeHostChecks)' != 'true'" />
     <Compile Include="PluginEntry.cs" />
     <Compile Include="NativeExtractionGuard.cs" />
     <Compile Include="AssWindowCache.cs" />

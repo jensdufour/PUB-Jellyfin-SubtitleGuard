@@ -1,8 +1,13 @@
 using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using HarmonyLib;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Controller.Configuration;
+using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Streaming;
+using MediaBrowser.Model.Dlna;
 using MediaBrowser.Controller.IO;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
@@ -16,6 +21,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SubtitleGuard;
 
+if (args.Length == 2 && args[0] == "--hls-hooks")
+{
+    await CheckHlsHooks(Path.GetFullPath(args[1]));
+    return;
+}
+
 if (args.Length == 2 && args[0] == "--window-contract")
 {
     await CheckWindowContract(args[1]);
@@ -24,6 +35,155 @@ if (args.Length == 2 && args[0] == "--window-contract")
 
 await using var registered = args.Contains("--collectible") ? await RegisterCollectible() : null;
 await CheckNativeBehavior(registered is not null);
+
+static async Task CheckHlsHooks(string host)
+{
+    AssemblyLoadContext.Default.Resolving += (_, name) =>
+        File.Exists(Path.Combine(host, name.Name + ".dll"))
+            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(host, name.Name + ".dll")) : null;
+    AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(host, "Jellyfin.Api.dll"));
+    var controller = Type.GetType("Jellyfin.Api.Controllers.DynamicHlsController, Jellyfin.Api", throwOnError: true)!;
+    var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+    var command = controller.GetMethod("GetCommandLineArguments", flags, [typeof(string), typeof(MediaBrowser.Controller.Streaming.StreamState), typeof(bool), typeof(int)]);
+    var video = controller.GetMethod("GetVideoArguments", flags, [typeof(MediaBrowser.Controller.Streaming.StreamState), typeof(int), typeof(bool), typeof(string)]);
+    Check(command?.ReturnType == typeof(string) && video?.ReturnType == typeof(string), "native HLS command and video hooks have exact supported signatures");
+    var playlist = controller.GetMethod("GetVariantPlaylistInternal", flags)!;
+    var move = playlist.GetCustomAttribute<AsyncStateMachineAttribute>()?.StateMachineType.GetMethod("MoveNext", flags);
+    Check(move is not null, "native variant playlist exposes its awaited async state machine");
+    var window = typeof(NativeExtractionGuard).Assembly.GetType("SubtitleGuard.WindowedBurnIn", throwOnError: true)!;
+    var clock = window.GetMethod("PlaylistClock", BindingFlags.Static | BindingFlags.NonPublic)!;
+    var getter = typeof(EncodingJobInfo).GetProperty(nameof(EncodingJobInfo.TargetFramerate))!.GetMethod!;
+    var replacement = window.GetMethod("PlaylistFramerate", BindingFlags.Static | BindingFlags.NonPublic)!;
+    var original = PatchProcessor.GetOriginalInstructions(move!).ToList();
+    Check(original.Count(instruction => instruction.Calls(getter)) == 1, "native variant playlist has exactly one target-framerate getter");
+    var patched = ((IEnumerable<CodeInstruction>)clock.Invoke(null, [original.Select(instruction => new CodeInstruction(instruction)).ToList()])!).ToList();
+    Check(patched.Count(instruction => instruction.Calls(replacement)) == 1 && !patched.Any(instruction => instruction.Calls(getter)), "playlist transpiler replaces exactly the native getter");
+    foreach (var invalid in new[] { new List<CodeInstruction> { new(OpCodes.Nop) }, new List<CodeInstruction> { new(OpCodes.Callvirt, getter), new(OpCodes.Callvirt, getter) } })
+    {
+        try { _ = ((IEnumerable<CodeInstruction>)clock.Invoke(null, [invalid])!).ToList(); }
+        catch (TargetInvocationException exception) when (exception.InnerException is NotSupportedException)
+        {
+            Check(invalid.All(instruction => !instruction.Calls(replacement)), "unsupported getter count fails closed without partial replacement");
+            continue;
+        }
+        throw new InvalidOperationException("Unsupported playlist getter count was accepted.");
+    }
+    await CheckPlaylistEligibility(window, move!, replacement);
+    Console.WriteLine("CONTRACT native playlist calls: " + string.Join("; ", original.Select(instruction => instruction.operand).OfType<MethodInfo>().Where(value => value.Name.Contains("Segment", StringComparison.OrdinalIgnoreCase) || value.Name.Contains("Playlist", StringComparison.OrdinalIgnoreCase)).Distinct().Select(value => value.ToString())));
+    Console.WriteLine("CONTRACT native encoder calls: " + string.Join("; ", PatchProcessor.GetOriginalInstructions(video!).Select(instruction => instruction.operand).OfType<MethodInfo>().Where(value => value.DeclaringType == typeof(EncodingHelper)).Distinct().Select(value => value.ToString())));
+}
+
+static async Task CheckPlaylistEligibility(Type window, MethodInfo move, MethodInfo replacement)
+{
+    var flags = BindingFlags.Static | BindingFlags.NonPublic;
+    var active = window.GetField("_active", flags)!;
+    var canPrepare = window.GetMethod("CanPrepare", flags)!;
+    var root = Path.Combine(Path.GetTempPath(), "subtitleguard-hls-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var savedSwitch = Environment.GetEnvironmentVariable("SUBTITLEGUARD_WINDOWED_ASS");
+    var previousActive = active.GetValue(null);
+    var path = Path.Combine(root, "native.ass");
+    var paths = new Mock<IApplicationPaths>();
+    paths.SetupGet(value => value.CachePath).Returns(root);
+    var manager = new Mock<IPathManager>();
+    manager.Setup(value => value.GetSubtitlePath(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>())).Returns(path);
+    var services = new ServiceCollection().AddSingleton(paths.Object).AddSingleton(manager.Object)
+        .AddSingleton(Mock.Of<IMediaEncoder>()).BuildServiceProvider();
+    var logger = Activator.CreateInstance(typeof(NullLogger<>).MakeGenericType(window))!;
+    var instance = Activator.CreateInstance(window, [services, logger])!;
+    try
+    {
+        Environment.SetEnvironmentVariable("SUBTITLEGUARD_WINDOWED_ASS", "1");
+        await ((IHostedService)instance).StartAsync(CancellationToken.None);
+        if (OperatingSystem.IsLinux())
+        {
+            Check(ReferenceEquals(active.GetValue(null), instance), "Linux hosted-service startup activates windowed burn-in");
+            Check(Harmony.GetPatchInfo(move)?.Owners.Contains("jensdufour.subtitleguard.windowed-burn-in") == true,
+                "Linux startup applies the native async playlist transpiler");
+            var current = PatchProcessor.GetCurrentInstructions(move).ToList();
+            Check(current.Count(instruction => instruction.Calls(replacement)) == 1, "installed native playlist contains exactly one replacement clock");
+        }
+        else
+        {
+            Check(active.GetValue(null) is null && Harmony.GetPatchInfo(move)?.Owners.Contains("jensdufour.subtitleguard.windowed-burn-in") != true,
+                "non-Linux hosted-service startup rejects windowed hooks");
+            var cacheType = window.Assembly.GetType("SubtitleGuard.AssWindowCache", throwOnError: true)!;
+            window.GetField("_cache", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance,
+                Activator.CreateInstance(cacheType, [(Func<string>)(() => string.Empty), root, CancellationToken.None]));
+            window.GetField("_pathManager", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(instance, manager.Object);
+            active.SetValue(null, instance);
+            Console.WriteLine("LIMIT Windows: reflection-scoped helper fixtures only; Linux activation remains unverified here.");
+        }
+
+        using var state = new StreamState(Mock.Of<IMediaSourceManager>(), default, Mock.Of<ITranscodeManager>());
+        state.BaseRequest = new StreamingRequestDto { SegmentLength = 6 };
+        state.MediaSource = new MediaSourceInfo { Id = "fixture", Path = "https://example.invalid/fixture.mkv", RunTimeTicks = TimeSpan.FromMinutes(5).Ticks };
+        state.VideoStream = new MediaStream { Type = MediaStreamType.Video, Index = 0, RealFrameRate = 30, AverageFrameRate = 23.333f };
+        state.SubtitleStream = new MediaStream { Type = MediaStreamType.Subtitle, Index = 1, Codec = "ass" };
+        state.SubtitleDeliveryMethod = SubtitleDeliveryMethod.Encode;
+        state.OutputVideoCodec = "h264";
+        Set("MediaPath", state.MediaSource.Path);
+        Set("RunTimeTicks", state.MediaSource.RunTimeTicks);
+        Check(state.SegmentLength == 6, "native fixture selects six-second HLS segments");
+        var originalSubtitle = state.SubtitleStream;
+        Check(state.VideoStream.ReferenceFrameRate == 23.333f, "native metadata reference rate is 23.333 while real rate is 30");
+        state.BaseRequest.MaxFramerate = 23.333f;
+        Check(state.TargetFramerate == 23.333f && Eligible() && Rate() == 30,
+            "integer source clock replaces mismatched native target without genuine maximum-FPS conversion");
+        var frameMethod = typeof(EncodingHelper).GetMethod("GetFramerateParam", BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!;
+        var frameHelper = frameMethod.IsStatic ? null : RuntimeHelpers.GetUninitializedObject(typeof(EncodingHelper));
+        Check(!PatchProcessor.GetOriginalInstructions(frameMethod).Any(instruction => instruction.opcode == OpCodes.Ldfld
+            && instruction.operand is FieldInfo field && field.DeclaringType == typeof(EncodingHelper)),
+            "native framerate helper reads request state without instance dependencies");
+        Check(frameMethod.Invoke(frameHelper, [state]) is null, "native encoder applies no FPS conversion when reference equals maximum");
+        foreach (var rate in new[] { 23.976f, 29.97f })
+        {
+            state.VideoStream.RealFrameRate = rate;
+            Check(!Eligible() && Rate() == state.TargetFramerate, "fractional source keeps native clock: " + rate);
+        }
+        state.VideoStream.RealFrameRate = 30;
+        Reject(() => state.MediaPath = "/fixture.mkv", () => state.MediaPath = state.MediaSource.Path, "local source");
+        Reject(() => originalSubtitle.IsExternal = true, () => originalSubtitle.IsExternal = false, "external subtitle");
+        Reject(() => originalSubtitle.Codec = "srt", () => originalSubtitle.Codec = "ass", "non-ASS subtitle");
+        Reject(() => state.SubtitleDeliveryMethod = SubtitleDeliveryMethod.External, () => state.SubtitleDeliveryMethod = SubtitleDeliveryMethod.Encode, "direct subtitle delivery");
+        Reject(() => state.OutputVideoCodec = "copy", () => state.OutputVideoCodec = "h264", "copied video");
+        Reject(() => state.RunTimeTicks = null, () => state.RunTimeTicks = TimeSpan.FromMinutes(5).Ticks, "live source without runtime");
+        foreach (var length in new[] { 0, 21 }) Reject(() => state.Request.SegmentLength = length, () => state.Request.SegmentLength = 6, "unsupported segment duration " + length);
+        Reject(() => state.BaseRequest.Framerate = 24, () => state.BaseRequest.Framerate = null, "fixed FPS conversion");
+        Reject(() => state.BaseRequest.MaxFramerate = 20, () => state.BaseRequest.MaxFramerate = 23.333f, "maximum FPS conversion");
+        File.WriteAllText(path, "complete native fixture");
+        Check(!Eligible() && Rate() == state.TargetFramerate, "good native cache preserves original clock and fast path");
+        File.WriteAllText(path + ".subtitleguard.pending", "");
+        Check(Eligible() && Rate() == 30, "marked native cache remains eligible for bounded preparation");
+        File.Delete(path + ".subtitleguard.pending");
+        File.Delete(path);
+        Console.WriteLine("CONTRACT state hydration passed against " + typeof(StreamState).Assembly.GetName().Version);
+
+        bool Eligible() => (bool)canPrepare.Invoke(null, [state])!;
+        float? Rate() => (float?)replacement.Invoke(null, [state]);
+        void Reject(Action change, Action restore, string name)
+        {
+            change();
+            try { Check(!Eligible() && Rate() == state.TargetFramerate, name + " retains native fallback clock"); }
+            finally { restore(); }
+        }
+        void Set(string name, object? value)
+        {
+            var property = typeof(StreamState).GetProperty(name)!;
+            Check(property.SetMethod is not null, "native fixture exposes typed " + name + " hydration");
+            property.SetValue(state, value);
+        }
+    }
+    finally
+    {
+        await ((IHostedService)instance).StopAsync(CancellationToken.None);
+        ((IDisposable)instance).Dispose();
+        active.SetValue(null, previousActive);
+        Environment.SetEnvironmentVariable("SUBTITLEGUARD_WINDOWED_ASS", savedSwitch);
+        services.Dispose();
+        if (Directory.Exists(root)) Directory.Delete(root, true);
+    }
+}
 
 static async Task CheckWindowContract(string ffmpeg)
 {

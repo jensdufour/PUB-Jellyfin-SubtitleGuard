@@ -1,6 +1,6 @@
 # Subtitle Guard
 
-**0.4.3: native subtitle-cache guards with one bounded transport retry
+**0.4.4: native subtitle-cache guards with one bounded transport retry
 and optional windowed ASS burn-in.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
@@ -23,6 +23,34 @@ as long as another native source read. GitHub Actions published0.4.3 after Jelly
 repository package in one idle restart with its existing windowed mode retained.
 
 ## Optional Native HLS Preparation
+
+Version0.4.4 aligns the variant playlist, continuation seeks and bounded output
+with the native encoder's integer segment clock. It replaces exactly one
+framerate lookup in the native async variant-playlist calculation, not the
+global framerate getter or client request. This removes short non-final tail
+segments when the requested maximum differs from the actual native GOP rate.
+Unsupported native code shapes fail closed at startup.
+
+Bounded preparation requires an integer source frame rate without an actual
+fixed/max-framerate conversion. Fractional-rate sources and real conversions
+use guarded native full extraction; they are not rounded or forced to a new
+frame rate. Existing good native caches retain the original fast path.
+Extraction limits, subtitle carry-over, native timestamp flags and audio policy
+are unchanged. An end-cap-only adjustment does not repair the playlist clock.
+
+[Tests/native-hls-continuity.py](Tests/native-hls-continuity.py) reproduces the
+old short-tail failure and checks three software/QSV jobs against one continuous
+reference: exact decoded frame identities/PTS, full non-final segments, absolute
+crossing-cue pixels, prepared seeks and a legitimate short final segment.
+Copied AAC uses the native seek-trimming bitstream filter; audio checks account
+for codec packet quantization/priming rather than claiming sample-identical AAC
+re-encoding. Fractional-rate controls verify the unbounded fallback. Synthetic
+tests do not replace provider/client acceptance.
+
+```bash
+python3 Tests/native-hls-continuity.py --ffmpeg /path/to/ffmpeg
+python3 Tests/native-hls-continuity.py --ffmpeg /path/to/ffmpeg --qsv
+```
 
 On Linux, set `SUBTITLEGUARD_WINDOWED_ASS=1` in the Jellyfin service environment
 and perform a full service restart. For example, a systemd drop-in:
@@ -276,6 +304,19 @@ dotnet run --project Tests/RuntimeChecks.csproj -c Release "-p:JellyfinBin=$Jell
 dotnet run --project Tests/RuntimeChecks.csproj -c Release "-p:JellyfinBin=$JellyfinBin" -- --window-contract /path/to/ffmpeg
 ./scripts/package.ps1 -JellyfinBin $JellyfinBin
 ```
+
+For an installed host whose controller assembly differs from the default12.0
+package reference, use its complete matching bin directory for native checks:
+
+```powershell
+dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true "-p:JellyfinBin=$JellyfinBin" -- --hls-hooks $JellyfinBin
+dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true "-p:JellyfinBin=$JellyfinBin"
+```
+
+The hook probe verifies the actual controller's exact command/video signatures;
+it does not start Linux hosted services, encode media or prove job continuity.
+The second command runs the existing native extraction/cache assertions. Default
+build references and the12.0/12.1 compatibility checks remain unchanged.
 
 The versioned ZIP contains the plugin DLL and `0Harmony.dll` only. The historical
 plugin DLL name is retained for compatibility; use the ZIP contents, not a DLL

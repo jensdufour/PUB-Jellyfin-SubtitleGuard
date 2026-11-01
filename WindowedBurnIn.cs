@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.IO;
@@ -36,17 +37,22 @@ internal sealed class WindowedBurnIn(IServiceProvider services, ILogger<Windowed
             var encoder = services.GetRequiredService<IMediaEncoder>();
             _pathManager = services.GetRequiredService<IPathManager>();
             var controller = Type.GetType("Jellyfin.Api.Controllers.DynamicHlsController, Jellyfin.Api", throwOnError: true)!;
-            var command = controller.GetMethod("GetCommandLineArguments", BindingFlags.Instance | BindingFlags.NonPublic);
-            var video = controller.GetMethod("GetVideoArguments", BindingFlags.Instance | BindingFlags.NonPublic);
-            if (command?.ReturnType != typeof(string) || video?.ReturnType != typeof(string)
-                || command.GetParameters().Length != 4 || video.GetParameters().Length != 4
-                || !typeof(EncodingJobInfo).IsAssignableFrom(command.GetParameters()[1].ParameterType)
-                || !typeof(EncodingJobInfo).IsAssignableFrom(video.GetParameters()[0].ParameterType))
+            var command = controller.GetMethod("GetCommandLineArguments", BindingFlags.Instance | BindingFlags.NonPublic,
+                [typeof(string), typeof(StreamState), typeof(bool), typeof(int)]);
+            var video = controller.GetMethod("GetVideoArguments", BindingFlags.Instance | BindingFlags.NonPublic,
+                [typeof(StreamState), typeof(int), typeof(bool), typeof(string)]);
+            var playlist = controller.GetMethod("GetVariantPlaylistInternal", BindingFlags.Instance | BindingFlags.NonPublic);
+            var playlistState = playlist?.GetCustomAttribute<AsyncStateMachineAttribute>()?.StateMachineType;
+            var playlistMove = playlistState?.GetMethod("MoveNext", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (command?.ReturnType != typeof(string) || video?.ReturnType != typeof(string))
                 throw new NotSupportedException("Unsupported native HLS method signatures.");
+            if (playlistMove is null)
+                throw new NotSupportedException("Unsupported native HLS playlist state machine.");
             var root = Path.Combine(paths.CachePath, "subtitleguard-windows", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             _cache = new AssWindowCache(() => encoder.EncoderPath, root, _stopping.Token);
             _active = this;
+            _patches.Patch(playlistMove, transpiler: Hook(nameof(PlaylistClock)));
             _patches.Patch(video, postfix: Hook(nameof(LimitOutput)));
             _patches.Patch(command, prefix: Hook(nameof(Prepare)), finalizer: Hook(nameof(Restore)));
             _logger.LogInformation("Subtitle Guard: windowed remote ASS burn-in enabled for all users; native HLS, bounded preparation and guarded fallback.");
@@ -62,20 +68,62 @@ internal sealed class WindowedBurnIn(IServiceProvider services, ILogger<Windowed
 
     private static HarmonyMethod Hook(string name) => new(typeof(WindowedBurnIn).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static)!);
 
-    private static void Prepare(object __instance, object[] __args, ref PreparedCall? __state)
+    private static IEnumerable<CodeInstruction> PlaylistClock(IEnumerable<CodeInstruction> instructions)
+    {
+        var code = instructions.ToList();
+        var getter = typeof(EncodingJobInfo).GetProperty(nameof(EncodingJobInfo.TargetFramerate))!.GetMethod!;
+        var replacement = typeof(WindowedBurnIn).GetMethod(nameof(PlaylistFramerate), BindingFlags.NonPublic | BindingFlags.Static)!;
+        var matches = code.Where(instruction => instruction.Calls(getter)).ToArray();
+        if (matches.Length != 1)
+            throw new NotSupportedException("Unsupported native HLS playlist framerate calculation.");
+        matches[0].opcode = System.Reflection.Emit.OpCodes.Call;
+        matches[0].operand = replacement;
+        return code;
+    }
+
+    private static float? PlaylistFramerate(EncodingJobInfo state)
+    {
+        if (state is StreamState stream && CanPrepare(stream))
+            return stream.VideoStream!.RealFrameRate;
+        return state.TargetFramerate;
+    }
+
+    private static bool CanPrepare(StreamState state)
     {
         var active = _active;
-        if (active?._cache is null || __args[1] is not StreamState state || __args[2] is not false
-            || state.SubtitleStream is not { IsExternal: false } subtitle || state.VideoStream is null
-            || state.SubtitleDeliveryMethod != SubtitleDeliveryMethod.Encode
+        if (active?._cache is null || state.SubtitleStream is not { IsExternal: false } subtitle
+            || state.VideoStream is null || state.SubtitleDeliveryMethod != SubtitleDeliveryMethod.Encode
             || EncodingHelper.IsCopyCodec(state.OutputVideoCodec)
             || !(string.Equals(subtitle.Codec, "ass", StringComparison.OrdinalIgnoreCase) || string.Equals(subtitle.Codec, "ssa", StringComparison.OrdinalIgnoreCase))
             || !Uri.TryCreate(state.MediaPath, UriKind.Absolute, out var source) || source.Scheme is not ("http" or "https")
-            || state.RunTimeTicks is not > 0)
+            || state.RunTimeTicks is not > 0 || state.SegmentLength is < 1 or > 20)
+            return false;
+        var rate = state.VideoStream.RealFrameRate;
+        if (rate is not > 0 || !float.IsFinite(rate.Value) || rate.Value != MathF.Floor(rate.Value)) return false;
+        if (state.BaseRequest.Framerate is { } fixedRate && fixedRate != rate.Value) return false;
+        if (state.BaseRequest.MaxFramerate is { } maximumRate && state.VideoStream.ReferenceFrameRate > maximumRate
+            && maximumRate != rate.Value) return false;
+        try
+        {
+            var nativePath = active._pathManager?.GetSubtitlePath(state.MediaSource.Id, subtitle.Index, "." + subtitle.Codec.ToLowerInvariant());
+            return nativePath is null || !File.Exists(nativePath) || new FileInfo(nativePath).Length == 0
+                || File.Exists(nativePath + NativeExtractionGuard.PendingSuffix);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+    }
+
+    private static void Prepare(object __instance, object[] __args, ref PreparedCall? __state)
+    {
+        var active = _active;
+        if (active?._cache is null || __args[1] is not StreamState state || __args[2] is not false || !CanPrepare(state))
             return;
+        var subtitle = state.SubtitleStream!;
         var startTicks = state.BaseRequest.StartTimeTicks ?? 0;
-        var runtimeTicks = state.RunTimeTicks.Value;
-        long? stride = state.Request.ActualSegmentLengthTicks;
+        var runtimeTicks = state.RunTimeTicks!.Value;
+        long? stride = TimeSpan.FromSeconds(state.SegmentLength).Ticks;
         if (stride is not > 0 || stride > TimeSpan.FromSeconds(20).Ticks || startTicks < 0 || startTicks >= runtimeTicks) return;
         var endTicks = Math.Min(runtimeTicks, checked(startTicks + stride.Value * 5));
         var cancellation = __instance is ControllerBase controller ? controller.HttpContext.RequestAborted : active._stopping.Token;

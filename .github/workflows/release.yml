@@ -36,6 +36,7 @@ jobs:
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --collectible
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --window-contract "$(command -v ffmpeg)"
+          python3 Tests/native-hls-continuity.py --ffmpeg "$(command -v ffmpeg)"
       - name: Verify Jellyfin 12.1 runtime
         shell: bash
         run: |
@@ -48,6 +49,18 @@ jobs:
           cp -a Tests/bin/Release/net10.0 "$RUNNER_TEMP/checks-12.1"
           cp "$RUNNER_TEMP/jellyfin-host-12.1/usr/lib/jellyfin/bin/"*.dll "$RUNNER_TEMP/checks-12.1/"
           dotnet "$RUNNER_TEMP/checks-12.1/RuntimeChecks.dll" --collectible
+      - name: Verify Jellyfin 12.4 native playlist clock
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --max-time 180 \
+            'https://repo.jellyfin.org/ubuntu/pool/main/j/jellyfin/jellyfin-server_12.4+ubu2404_amd64.deb' \
+            --output "$RUNNER_TEMP/jellyfin-server-12.4.deb"
+          echo "88b9ff091677588686644d8da61c21c2e9fbd9bb99296b380e9c0efa8ec68285  $RUNNER_TEMP/jellyfin-server-12.4.deb" | sha256sum --check --strict
+          dpkg-deb --extract "$RUNNER_TEMP/jellyfin-server-12.4.deb" "$RUNNER_TEMP/jellyfin-host-12.4"
+          host="$RUNNER_TEMP/jellyfin-host-12.4/usr/lib/jellyfin/bin"
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --hls-hooks "$host"
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --collectible
       - name: Package
         id: package
         shell: pwsh
