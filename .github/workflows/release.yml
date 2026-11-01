@@ -20,7 +20,15 @@ jobs:
       - name: Install FFmpeg contract prerequisite
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends fonts-dejavu-core
+          curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --max-time 180 \
+            'https://repo.jellyfin.org/ubuntu/pool/main/j/jellyfin-ffmpeg/jellyfin-ffmpeg8_8.1.3-1-noble_amd64.deb' \
+            --output "$RUNNER_TEMP/jellyfin-ffmpeg.deb"
+          echo "188fa8b31f7e0ded9dadd1d11d1cd05482a7f03cec4e5c0af80aae21fde44ce4  $RUNNER_TEMP/jellyfin-ffmpeg.deb" | sha256sum --check --strict
+          dpkg-deb --extract "$RUNNER_TEMP/jellyfin-ffmpeg.deb" "$RUNNER_TEMP/jellyfin-ffmpeg"
+          binary="$RUNNER_TEMP/jellyfin-ffmpeg/usr/lib/jellyfin-ffmpeg/ffmpeg"
+          test -x "$binary"
+          echo "FFMPEG_BIN=$binary" >> "$GITHUB_ENV"
       - name: Fetch checksum-pinned Jellyfin 12 host assemblies
         shell: bash
         run: |
@@ -35,8 +43,8 @@ jobs:
         run: |
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --collectible
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
-          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --window-contract "$(command -v ffmpeg)"
-          python3 Tests/native-hls-continuity.py --ffmpeg "$(command -v ffmpeg)"
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --window-contract "$FFMPEG_BIN"
+          python3 Tests/native-hls-continuity.py --ffmpeg "$FFMPEG_BIN"
       - name: Verify Jellyfin 12.1 runtime
         shell: bash
         run: |
