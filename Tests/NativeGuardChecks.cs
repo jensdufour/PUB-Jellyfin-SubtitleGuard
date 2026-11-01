@@ -241,7 +241,7 @@ static async Task CheckWindowContract(string ffmpeg)
             var errors = process.StandardError.ReadToEndAsync(timeout.Token);
             try { await Task.WhenAll(output, errors, process.WaitForExitAsync(timeout.Token)); }
             finally { if (!process.HasExited) { process.Kill(true); await process.WaitForExitAsync(); } }
-            if (process.ExitCode != 0 || (await errors).Length > 0) throw new IOException("Synthetic FFmpeg contract command failed.");
+            if (process.ExitCode != 0 || (await errors).Length > 0) throw new IOException("Synthetic FFmpeg contract command failed: " + await errors);
             return await output;
         }
     }

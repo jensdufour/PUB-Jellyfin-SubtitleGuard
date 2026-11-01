@@ -1,6 +1,6 @@
 # Subtitle Guard
 
-**0.4.5: native subtitle-cache guards with one bounded transport retry
+**0.4.6: native subtitle-cache guards with one bounded transport retry
 and optional windowed ASS burn-in.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
@@ -24,7 +24,7 @@ repository package in one idle restart with its existing windowed mode retained.
 
 ## Optional Native HLS Preparation
 
-Version0.4.5 aligns the variant playlist, continuation seeks and bounded output
+Version0.4.6 aligns the variant playlist, continuation seeks and bounded output
 with the native encoder's integer segment clock. It replaces exactly one
 framerate lookup in the native async variant-playlist calculation, not the
 global framerate getter or client request. This removes short non-final tail
@@ -50,6 +50,9 @@ tests do not replace provider/client acceptance.
 Release checks pin Jellyfin FFmpeg8.1.3, including its package checksum.
 The unshipped0.4.4 tag failed the same AAC continuity assertion on Ubuntu
 FFmpeg6.1.1; the assertion was retained, not relaxed for that older toolchain.
+The unshipped0.4.5 tag extracted that native package without installing its
+runtime dependencies. Version0.4.6 installs the verified package normally on
+the disposable CI runner before exercising the same contracts.
 
 ```bash
 python3 Tests/native-hls-continuity.py --ffmpeg /path/to/ffmpeg
