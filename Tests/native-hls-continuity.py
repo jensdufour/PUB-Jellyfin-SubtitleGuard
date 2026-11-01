@@ -330,6 +330,9 @@ class Regression:
         self.check(timestamps == [pts - source_pts[0] for pts in source_pts], f"{rate} unbounded fallback exact rational decoded PTS")
 
     def ts_regression(self, source, encoder):
+        source_audio = json.loads(self.run(["-v", "error", "-select_streams", "a:0", "-show_entries",
+            "stream=time_base", "-of", "json", source], self.ffprobe))
+        audio_precision = max(Fraction(1, self.sample_rate), Fraction(source_audio["streams"][0]["time_base"]), Fraction(1, 90000))
         ass = self.ass("ts-global")
         reference = self.hls(source, encoder + "-ts-reference", 0, 90, ass, encoder)
         expected_ids = self.identities(reference)
@@ -354,7 +357,7 @@ class Regression:
         covered = ordered[0][1]
         overlap = Fraction(0)
         for start, end in ordered[1:]:
-            require(start <= covered + Fraction(1, self.sample_rate),
+            require(start <= covered + audio_precision,
                     f"AAC coverage hole {float(start - covered):.9f}s at {float(start):.9f}s after {float(covered):.9f}s")
             overlap = max(overlap, covered - start)
             covered = max(covered, end)
@@ -362,9 +365,9 @@ class Regression:
         self.check([(duration, entry["data_hash"]) for _, duration, entry in audio] ==
                    [(duration, entry["data_hash"]) for _, duration, entry in expected_audio],
                    f"copied AAC exact ordered packet payload/duration coverage; overlap {float(overlap):.6f}s")
-        self.check(all(abs(actual[0] - expected[0]) <= Fraction(1, self.sample_rate)
+        self.check(all(abs(actual[0] - expected[0]) <= audio_precision
                        for actual, expected in zip(audio, expected_audio)),
-                   "copied AAC PTS differs by at most one audio sample of TS timebase quantization")
+                   f"copied AAC PTS stays within measured source/sample/TS precision {audio_precision}s")
 
 
 def main():

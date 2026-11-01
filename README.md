@@ -60,8 +60,11 @@ flags alone do not prevent the child from shifting the first job for reordered
 video DTS. The MPEG-TS regression checks three jobs against a continuous
 reference, including the native QSV overlay path in hardware checks. Video
 packet/decoded PTS and frame identities must match exactly; copied AAC payloads
-and durations must match in order, with at most one audio sample of TS-clock
-quantization. fMP4 and unprepared native jobs do not receive these options.
+and durations must match in order. Its timestamp bound is derived from the
+source timebase, audio sample rate and TS clock: Matroska can timestamp AAC at
+1ms precision, coarser than one audio sample. fMP4 and unprepared native jobs
+do not receive these options. This is packet/timestamp continuity, not a claim
+of sample-identical re-encoded audio or physical-client acceptance.
 
 ```bash
 python3 Tests/native-hls-continuity.py --ffmpeg /path/to/ffmpeg
