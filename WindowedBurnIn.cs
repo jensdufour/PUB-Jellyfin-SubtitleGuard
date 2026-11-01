@@ -158,6 +158,8 @@ internal sealed class WindowedBurnIn(IServiceProvider services, ILogger<Windowed
         if (Current.Value is { } call && ReferenceEquals(call.State, __args[0]))
         {
             __result += " -to " + ((decimal)call.EndTicks / TimeSpan.TicksPerSecond).ToString("0.#######", CultureInfo.InvariantCulture);
+            if (string.Equals(__args[3] as string, "ts", StringComparison.OrdinalIgnoreCase))
+                __result += " -hls_segment_options mpegts_copyts=1:avoid_negative_ts=disabled";
             call.OutputLimited = true;
         }
     }

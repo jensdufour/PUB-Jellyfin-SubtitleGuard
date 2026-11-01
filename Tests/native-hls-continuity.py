@@ -44,10 +44,16 @@ def require(condition, message):
 
 
 class Regression:
-    def __init__(self, ffmpeg, root):
+    def __init__(self, ffmpeg, root, container="fmp4", mux="native", sample_rate=48000, source_container="mp4", bframes=3, native_overlay=False):
         self.ffmpeg = str(ffmpeg)
         self.ffprobe = str(Path(ffmpeg).with_name("ffprobe"))
         self.root = root
+        self.container = container
+        self.mux = mux
+        self.sample_rate = sample_rate
+        self.source_container = source_container
+        self.bframes = bframes
+        self.native_overlay = native_overlay
         self.passed = 0
 
     def run(self, arguments, binary=None):
@@ -74,15 +80,15 @@ class Regression:
         time_base = Fraction(data["streams"][0]["time_base"])
         return [(Fraction(entry["pts"]) * time_base,
                  Fraction(entry.get("duration", entry.get("nb_samples", 0))) *
-                 (time_base if kind == "packets" else Fraction(1, SAMPLE_RATE)), entry)
+                 (time_base if kind == "packets" else Fraction(1, self.sample_rate)), entry)
                 for entry in data[kind] if "pts" in entry]
 
     def fixture(self, name, rate="30", duration="91.3"):
-        path = self.root / (name + ".mp4")
+        path = self.root / (name + "." + self.source_container)
         barcode = "geq=lum='if(lt(Y,16),16+219*mod(floor(N/pow(2,floor(X/12))),2),lum(X,Y))':cb='cb(X,Y)':cr='cr(X,Y)'"
         self.run([
             "-f", "lavfi", "-i", f"testsrc2=s={WIDTH}x{HEIGHT}:r={rate}:d={duration}",
-            "-f", "lavfi", "-i", f"sine=frequency=997:sample_rate={SAMPLE_RATE}:duration={duration}",
+            "-f", "lavfi", "-i", f"sine=frequency=997:sample_rate={self.sample_rate}:duration={duration}",
             "-map", "0:v", "-map", "1:a", "-vf", barcode,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "10", "-g", "251", "-bf", "3",
             "-force_key_frames", "0,7.1,19.3,34.7,52.2,73.1,89.1",
@@ -106,6 +112,17 @@ class Regression:
                      "-init_hw_device", "qsv=qs@va", "-filter_hw_device", "qs"] if encoder == "qsv" else [])
         video_filter = f"subtitles={ass}"
         video_filter += ",format=nv12,hwupload=extra_hw_frames=64" if encoder == "qsv" else ",format=yuv420p"
+        filter_args = ["-vf", video_filter]
+        if self.native_overlay:
+            require(encoder == "qsv", "Native overlay requires --qsv")
+            hardware += ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi", "-noautorotate"]
+            filter_args = ["-filter_complex",
+                f"alphasrc=s={WIDTH}x{HEIGHT}:r=30:start='{start}',format=bgra,"
+                f"subtitles=f='{ass}':charenc=utf-8:alpha=1:sub2video=1,"
+                "hwupload=derive_device=qsv:extra_hw_frames=64[sub];"
+                "[0:v:0]setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+                "scale_vaapi=format=nv12:extra_hw_frames=24,hwmap=derive_device=qsv,format=qsv[main];"
+                f"[main][sub]overlay_qsv=eof_action=pass:repeatlast=0:w={WIDTH}:h={HEIGHT}[video]"]
         codec = (["-c:v", "h264_qsv", "-preset", "veryfast", "-b:v", "1000k"] if encoder == "qsv"
                  else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])
         gop = str(round(float(rate) * 6))
@@ -113,15 +130,24 @@ class Regression:
         if audio == "copy" and start > 0:
             audio_args += ["-bsf:a", f"noise=drop='lt(pts*tb\\,{float(start):.3f})'"]
         arguments = hardware + ["-ss", str(start), "-i", str(source), "-map_metadata", "-1",
-            "-map_chapters", "-1", "-threads", "2", "-map", "0:v:0", "-map", "0:a:0", "-sn",
-            "-vf", video_filter] + codec + ["-g", gop, "-keyint_min", gop, "-bf", "3"] + audio_args + [
+            "-map_chapters", "-1", "-threads", "2", "-map", "[video]" if self.native_overlay else "0:v:0", "-map", "0:a:0", "-sn",
+            *filter_args] + codec + ["-g", gop, "-keyint_min", gop, "-bf", str(self.bframes)] + audio_args + [
             "-copyts", "-avoid_negative_ts", "disabled", "-start_at_zero",
             "-max_muxing_queue_size", "2048", "-f", "hls", "-max_delay", "5000000",
-            "-hls_time", "6", "-hls_segment_type", "fmp4", "-start_number", str(int(float(start) // 6)),
-            "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", str(directory / "%d.mp4"),
+            "-hls_time", "6", "-hls_segment_type", self.container, "-start_number", str(int(float(start) // 6)),
+            *(["-hls_fmp4_init_filename", "init.mp4"] if self.container == "fmp4" else []),
+            "-hls_segment_filename", str(directory / ("%d.mp4" if self.container == "fmp4" else "%d.ts")),
             "-hls_playlist_type", "vod", "-hls_list_size", "0"]
         if end is not None:
             arguments += ["-to", str(end)]
+        if self.mux == "child-copyts":
+            arguments += ["-hls_segment_options", "mpegts_copyts=1"]
+        elif self.mux == "child-timestamps":
+            arguments += ["-hls_segment_options", "mpegts_copyts=1:avoid_negative_ts=disabled"]
+        elif self.mux == "outer-copyts":
+            arguments += ["-mpegts_copyts", "1"]
+        elif self.mux == "zero-delay":
+            arguments += ["-muxdelay", "0"]
         playlist = directory / "index.m3u8"
         self.run(arguments + [playlist])
         return playlist
@@ -156,6 +182,8 @@ class Regression:
         return len(identities)
 
     def probe_segment(self, segment, selector, kind):
+        if segment.suffix == ".ts":
+            return self.probe(segment, selector, kind)
         joined = segment.parent / "probe.mp4"
         joined.write_bytes((segment.parent / "init.mp4").read_bytes() + segment.read_bytes())
         return self.probe(joined, selector, kind)
@@ -301,20 +329,68 @@ class Regression:
         source_pts = [pts for pts, _, _ in self.probe(source, "v:0", "frames")]
         self.check(timestamps == [pts - source_pts[0] for pts in source_pts], f"{rate} unbounded fallback exact rational decoded PTS")
 
+    def ts_regression(self, source, encoder):
+        ass = self.ass("ts-global")
+        reference = self.hls(source, encoder + "-ts-reference", 0, 90, ass, encoder)
+        expected_ids = self.identities(reference)
+        expected_pts = [pts for pts, _, _ in self.probe(reference, "v:0", "frames")]
+        origin = expected_pts[0]
+        self.check(expected_ids == list(range(2700)) and
+                   expected_pts == [origin + Fraction(index, FPS) for index in range(2700)],
+                   f"{encoder} {self.container}/{self.mux}: continuous 2700 IDs, constant native origin {origin}")
+        jobs = [self.hls(source, encoder + "-ts-job" + str(start), start, start + 30,
+                         self.ass("ts-window" + str(start), start, start + 30), encoder)
+                for start in (0, 30, 60)]
+        self.video_oracle(jobs, expected_ids, expected_pts)
+        baseline = self.probe(reference, "v:0", "packets")
+        packets = [packet for job in jobs for packet in self.probe(job, "v:0", "packets")]
+        self.check([(pts, duration) for pts, duration, _ in packets] ==
+                   [(pts, duration) for pts, duration, _ in baseline],
+                   f"{encoder} exact video packet PTS/durations and decoded PTS across both boundaries")
+        audio = [packet for job in jobs for packet in self.probe(job, "a:0", "packets")]
+        expected_audio = self.probe(reference, "a:0", "packets")
+        quantum = Fraction(1024, self.sample_rate)
+        ordered = sorted((pts, pts + duration) for pts, duration, _ in audio)
+        covered = ordered[0][1]
+        overlap = Fraction(0)
+        for start, end in ordered[1:]:
+            require(start <= covered + Fraction(1, self.sample_rate),
+                    f"AAC coverage hole {float(start - covered):.9f}s at {float(start):.9f}s after {float(covered):.9f}s")
+            overlap = max(overlap, covered - start)
+            covered = max(covered, end)
+        require(overlap <= quantum + Fraction(1, 90000), f"AAC multiframe overlap {float(overlap):.6f}s > {float(quantum):.6f}s")
+        self.check([(duration, entry["data_hash"]) for _, duration, entry in audio] ==
+                   [(duration, entry["data_hash"]) for _, duration, entry in expected_audio],
+                   f"copied AAC exact ordered packet payload/duration coverage; overlap {float(overlap):.6f}s")
+        self.check(all(abs(actual[0] - expected[0]) <= Fraction(1, self.sample_rate)
+                       for actual, expected in zip(audio, expected_audio)),
+                   "copied AAC PTS differs by at most one audio sample of TS timebase quantization")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ffmpeg", type=Path, default=Path("/usr/lib/jellyfin-ffmpeg/ffmpeg"))
     parser.add_argument("--qsv", action="store_true", help="Also run native Intel QSV; software always runs")
+    parser.add_argument("--container", choices=("fmp4", "mpegts"), default="fmp4")
+    parser.add_argument("--ts-regression", action="store_true")
+    parser.add_argument("--mux", choices=("native", "child-copyts", "child-timestamps", "outer-copyts", "zero-delay"), default="native")
+    parser.add_argument("--sample-rate", type=int, choices=(44100, 48000), default=48000)
+    parser.add_argument("--source-container", choices=("mp4", "mkv"), default="mp4")
+    parser.add_argument("--bframes", type=int, choices=(2, 3), default=3)
+    parser.add_argument("--native-overlay", action="store_true")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="native-hls-continuity-") as directory:
-        regression = Regression(args.ffmpeg, Path(directory))
+        regression = Regression(args.ffmpeg, Path(directory), args.container, args.mux,
+                                args.sample_rate, args.source_container, args.bframes, args.native_overlay)
         version = regression.run(["-version"]).decode().splitlines()[0]
         print(version, flush=True)
         source = regression.fixture("source")
         frames = regression.probe(source, "v:0", "frames")
         regression.check(frames[0][0] == 7 and any(entry["pict_type"] == "B" for _, _, entry in frames),
                          "fixture has nonzero seven-second origin and reordered B frames")
+        if args.ts_regression:
+            regression.ts_regression(source, "qsv" if args.qsv else "software")
+            return
         regression.scenario(source, "software")
         if args.qsv:
             regression.scenario(source, "qsv")

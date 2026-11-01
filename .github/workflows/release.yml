@@ -46,6 +46,7 @@ jobs:
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --window-contract "$FFMPEG_BIN"
           python3 Tests/native-hls-continuity.py --ffmpeg "$FFMPEG_BIN"
+          python3 Tests/native-hls-continuity.py --ffmpeg "$FFMPEG_BIN" --container mpegts --ts-regression --mux child-timestamps --sample-rate 44100 --bframes 2
       - name: Verify Jellyfin 12.1 runtime
         shell: bash
         run: |

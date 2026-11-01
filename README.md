@@ -1,6 +1,6 @@
 # Subtitle Guard
 
-**0.4.6: native subtitle-cache guards with one bounded transport retry
+**0.4.7: native subtitle-cache guards with one bounded transport retry
 and optional windowed ASS burn-in.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
@@ -24,7 +24,7 @@ repository package in one idle restart with its existing windowed mode retained.
 
 ## Optional Native HLS Preparation
 
-Version0.4.6 aligns the variant playlist, continuation seeks and bounded output
+Version0.4.7 aligns the variant playlist, continuation seeks and bounded output
 with the native encoder's integer segment clock. It replaces exactly one
 framerate lookup in the native async variant-playlist calculation, not the
 global framerate getter or client request. This removes short non-final tail
@@ -53,6 +53,15 @@ FFmpeg6.1.1; the assertion was retained, not relaxed for that older toolchain.
 The unshipped0.4.5 tag extracted that native package without installing its
 runtime dependencies. Version0.4.6 installs the verified package normally on
 the disposable CI runner before exercising the same contracts.
+
+Version0.4.7 also applies `mpegts_copyts=1:avoid_negative_ts=disabled` to
+HLS's child MPEG-TS muxer, only for prepared ASS jobs. The parent timestamp
+flags alone do not prevent the child from shifting the first job for reordered
+video DTS. The MPEG-TS regression checks three jobs against a continuous
+reference, including the native QSV overlay path in hardware checks. Video
+packet/decoded PTS and frame identities must match exactly; copied AAC payloads
+and durations must match in order, with at most one audio sample of TS-clock
+quantization. fMP4 and unprepared native jobs do not receive these options.
 
 ```bash
 python3 Tests/native-hls-continuity.py --ffmpeg /path/to/ffmpeg
