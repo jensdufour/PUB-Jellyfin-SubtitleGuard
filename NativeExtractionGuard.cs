@@ -93,7 +93,7 @@ public sealed class NativeExtractionGuard : IDisposable
     internal static bool IsStrmShortcut(bool isShortcut, string? path) =>
         isShortcut && path?.EndsWith(".strm", StringComparison.OrdinalIgnoreCase) == true;
 
-    private static void BeginSourceCoverage(MediaSourceInfo __0, ref CoverageScope? __state)
+    private static void BeginSourceCoverage(MediaSourceInfo __0, ref object? __state)
     {
         __state = new CoverageScope(SourceCoverage.Value);
         SourceCoverage.Value = null;
@@ -101,9 +101,9 @@ public sealed class NativeExtractionGuard : IDisposable
             SourceCoverage.Value = new CoverageContext(__0.RunTimeTicks.GetValueOrDefault(), videoStreamIndex, __0.Id, __0.ETag);
     }
 
-    private static void EndSourceCoverage(CoverageScope? __state)
+    private static void EndSourceCoverage(object? __state)
     {
-        if (__state is not null) SourceCoverage.Value = __state.Previous;
+        if (__state is CoverageScope scope) SourceCoverage.Value = scope.Previous;
     }
 
     private static void BeginReadScope(MediaSourceInfo __0, MediaStream __1, ref ReadScopeState? __state)
