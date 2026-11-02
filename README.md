@@ -1,14 +1,14 @@
 # Subtitle Guard
 
-**0.4.10 candidate: native subtitle-cache guards, one bounded transport retry,
+**0.4.10: native subtitle-cache guards, one bounded transport retry,
 optional windowed ASS burn-in, and same-read coverage for remote `.strm` extraction.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
 
-## Remote STRM Extraction Coverage - 0.4.10 Candidate
+## Remote STRM Extraction Coverage - 0.4.10
 
-The current working tree adds a coverage gate for embedded subtitle extraction
+Release0.4.10 adds a coverage gate for embedded subtitle extraction
 requested from a local Jellyfin shortcut ending in `.strm`. It appends a capped
 video `framecrc` side output to the same FFmpeg process, compares elapsed video
 packet coverage with the known source runtime (one-second tail tolerance), and
@@ -17,25 +17,24 @@ place until extraction and coverage both pass; ordinary scans, local media,
 external subtitles and sources without a usable runtime/video track retain their
 current path.
 
-This is a **release candidate, not yet installed on CT110**. It proves source video
-coverage, not cue completeness when the source reaches EOF but omits subtitle
-packets. It uses no last-cue heuristic or second source reader. On the first
+The 0.4.10 release passed its collectible/native, parser, and full/short/byte-cut
+loopback CI checks against pinned Jellyfin12.0,12.1, and12.4 assemblies. It proves
+source video coverage, not cue completeness when the source reaches EOF but omits
+subtitle packets. It uses no last-cue heuristic or second source reader. On the first
 selected embedded-subtitle request for a remote `.strm`, a cache without a
 matching coverage receipt is treated as legacy and re-extracted on demand. A
 successful extraction writes an atomic receipt bound to media-source ID, ETag
 hash, runtime and output size/mtime; future reads keep Jellyfin's native fast path.
-There is no background re-extraction or bulk cache clear, though each legacy
+There is no background re-extraction or automatic bulk cache clear, though each legacy
 track first selected can incur full native extraction latency. External/local
 tracks, MKS sidecars and other source types keep their existing cache behavior.
 The 64MiB coverage-output cap fails closed for sources that exceed it.
 
-The local 12.4 collectible/native simulation, `.strm` hook-path, cache-receipt,
-and parser tests pass. An equivalent loopback FFmpeg contract covering complete,
-clean-short and byte-truncated Matroska passed on CT110 using synthetic media.
-The C# loopback contract is also wired into release CI and must pass before this
-candidate is published. The one-time on-demand legacy-cache migration is the
-chosen policy; no bulk clear is planned. No production install/restart has
-occurred. Xtream orphan cleanup remains deferred.
+The 12.4 collectible/native simulation, `.strm` hook-path, cache-receipt, parser,
+and C# loopback FFmpeg contract covering complete, clean-short and byte-truncated
+Matroska passed in release CI. The one-time on-demand legacy-cache migration is
+the plugin policy; operators may separately clear the generated cache if needed.
+This plugin does not change library-provider cleanup settings.
 
 ## Sequential Native Extraction Retry
 
