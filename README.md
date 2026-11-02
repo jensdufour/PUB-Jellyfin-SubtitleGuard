@@ -1,12 +1,12 @@
 # Subtitle Guard
 
-**0.4.9 candidate: native subtitle-cache guards, one bounded transport retry,
+**0.4.10 candidate: native subtitle-cache guards, one bounded transport retry,
 optional windowed ASS burn-in, and same-read coverage for remote `.strm` extraction.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
 
-## Remote STRM Extraction Coverage - 0.4.9 Candidate
+## Remote STRM Extraction Coverage - 0.4.10 Candidate
 
 The current working tree adds a coverage gate for embedded subtitle extraction
 requested from a local Jellyfin shortcut ending in `.strm`. It appends a capped

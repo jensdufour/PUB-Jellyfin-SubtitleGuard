@@ -106,7 +106,7 @@ public sealed class NativeExtractionGuard : IDisposable
         if (__state is CoverageScope scope) SourceCoverage.Value = scope.Previous;
     }
 
-    private static void BeginReadScope(MediaSourceInfo __0, MediaStream __1, ref ReadScopeState? __state)
+    private static void BeginReadScope(MediaSourceInfo __0, MediaStream __1, ref object? __state)
     {
         __state = new ReadScopeState(CurrentRead.Value);
         CurrentRead.Value = null;
@@ -114,9 +114,9 @@ public sealed class NativeExtractionGuard : IDisposable
             CurrentRead.Value = new ReadScope(__0.Path, __0.Id, __0.ETag, __0.RunTimeTicks.GetValueOrDefault());
     }
 
-    private static Exception? EndReadScope(ReadScopeState? __state, Exception? __exception)
+    private static Exception? EndReadScope(object? __state, Exception? __exception)
     {
-        if (__state is not null) CurrentRead.Value = __state.Previous;
+        if (__state is ReadScopeState scope) CurrentRead.Value = scope.Previous;
         return __exception;
     }
 
