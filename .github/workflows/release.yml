@@ -44,6 +44,8 @@ jobs:
         run: |
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --collectible
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --coverage-parser
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --coverage-contract "$FFMPEG_BIN"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --window-contract "$FFMPEG_BIN"
           python3 Tests/native-hls-continuity.py --ffmpeg "$FFMPEG_BIN"
           python3 Tests/native-hls-continuity.py --ffmpeg "$FFMPEG_BIN" --container mpegts --ts-regression --mux child-timestamps --sample-rate 44100 --bframes 2
@@ -72,6 +74,8 @@ jobs:
           host="$RUNNER_TEMP/jellyfin-host-12.4/usr/lib/jellyfin/bin"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --hls-hooks "$host"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --collectible
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --coverage-parser
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --coverage-contract "$FFMPEG_BIN"
       - name: Package
         id: package
         shell: pwsh

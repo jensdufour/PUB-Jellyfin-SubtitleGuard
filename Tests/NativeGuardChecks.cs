@@ -2,12 +2,18 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
+using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
+using System.Text.RegularExpressions;
 using HarmonyLib;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Streaming;
 using MediaBrowser.Model.Dlna;
+using MediaBrowser.Model.MediaInfo;
 using MediaBrowser.Controller.IO;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.MediaEncoding;
@@ -30,6 +36,18 @@ if (args.Length == 2 && args[0] == "--hls-hooks")
 if (args.Length == 2 && args[0] == "--window-contract")
 {
     await CheckWindowContract(args[1]);
+    return;
+}
+
+if (args.Length == 2 && args[0] == "--coverage-contract")
+{
+    await CheckCoverageContract(Path.GetFullPath(args[1]));
+    return;
+}
+
+if (args.Length == 1 && args[0] == "--coverage-parser")
+{
+    CheckCoverageParser();
     return;
 }
 
@@ -268,8 +286,8 @@ static async Task CheckNativeBehavior(bool registered)
 {
     if (registered)
     {
-        Check(Harmony.GetAllPatchedMethods().Count(method => Harmony.GetPatchInfo(method)?.Owners.Contains("jensdufour.subtitleguard.native-extraction") == true) == 4,
-            "collectible plugin registration installs all four native guards");
+        Check(Harmony.GetAllPatchedMethods().Count(method => Harmony.GetPatchInfo(method)?.Owners.Contains("jensdufour.subtitleguard.native-extraction") == true) == 6,
+            "collectible plugin registration installs all six native extraction guards");
         Check(!typeof(Harmony).Assembly.IsCollectible && !typeof(NativeExtractionGuard).Assembly.IsCollectible, "patch runtime is non-collectible");
     }
 
@@ -337,6 +355,112 @@ static async Task CheckNativeBehavior(bool registered)
         Simulation.Result = Task.FromResult((0, string.Empty));
         await Extract();
         Check((await (Task<SubtitleEncoder.SubtitleInfo>)read.Invoke(encoder, [new MediaSourceInfo(), new MediaStream(), CancellationToken.None])!).Path == outputs[0], "completed subtitle read succeeds after repair");
+
+        var source = new MediaSourceInfo
+        {
+            Id = "remote-coverage-fixture",
+            Path = "https://example.invalid/fixture.mkv",
+            IsRemote = true,
+            Protocol = MediaProtocol.Http,
+            RunTimeTicks = TimeSpan.FromMinutes(1).Ticks,
+            MediaStreams =
+            [
+                new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" },
+                new MediaStream { Type = MediaStreamType.Subtitle, Index = 1, Codec = "srt", SupportsExternalStream = true },
+                new MediaStream { Type = MediaStreamType.Subtitle, Index = 2, Codec = "srt", SupportsExternalStream = true }
+            ]
+        };
+        Check(source.MediaStreams.Count(stream => stream.Type == MediaStreamType.Subtitle && stream.IsExtractableSubtitleStream && stream.SupportsExternalStream) == 2,
+            "native hook fixture exposes two extractable subtitle streams");
+        var strmRequestField = typeof(NativeExtractionGuard).GetField("StrmSubtitleRequest", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var strmRequest = (AsyncLocal<bool>)strmRequestField.GetValue(null)!;
+        var beginCoverage = typeof(NativeExtractionGuard).GetMethod("BeginSourceCoverage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var endCoverage = typeof(NativeExtractionGuard).GetMethod("EndSourceCoverage", BindingFlags.NonPublic | BindingFlags.Static)!;
+        async Task ExtractWithCoverage()
+        {
+            var previousRequest = strmRequest.Value;
+            strmRequest.Value = true;
+            object?[] scope = [source, null];
+            beginCoverage.Invoke(null, scope);
+            try { await Extract(); }
+            finally
+            {
+                endCoverage.Invoke(null, [scope[1]]);
+                strmRequest.Value = previousRequest;
+            }
+        }
+
+        Simulation.Result = Task.FromResult((0, string.Empty));
+        Simulation.CoverageTicks.Clear();
+        Simulation.CoverageStartTicks.Clear();
+        Simulation.CoveragePaths.Clear();
+        Simulation.CoverageStartTicks.Enqueue(TimeSpan.FromSeconds(9).Ticks);
+        Simulation.CoverageTicks.Enqueue(TimeSpan.FromSeconds(30).Ticks);
+        Simulation.CoverageStartTicks.Enqueue(TimeSpan.FromSeconds(9).Ticks);
+        Simulation.CoverageTicks.Enqueue(TimeSpan.FromSeconds(30).Ticks);
+        var beforeCoverageRetry = Simulation.ProcessCalls;
+        await Fails(ExtractWithCoverage, "clean nonempty partial extraction is rejected after one coverage retry");
+        Check(Simulation.ProcessCalls == beforeCoverageRetry + 2, "clean partial coverage receives exactly one source retry");
+        Check(outputs.All(path => !File.Exists(path)) && outputs.All(path => File.Exists(path + ".subtitleguard.pending")),
+            "clean partial outputs stay unpublished after retry exhaustion");
+        Check(Simulation.CoveragePaths.All(path => !File.Exists(path)), "coverage evidence is removed after failed extraction");
+
+        Simulation.CoverageStartTicks.Enqueue(TimeSpan.FromSeconds(12).Ticks);
+        Simulation.CoverageTicks.Enqueue(TimeSpan.FromSeconds(30).Ticks);
+        Simulation.CoverageStartTicks.Enqueue(TimeSpan.FromSeconds(12).Ticks);
+        Simulation.CoverageTicks.Enqueue(TimeSpan.FromSeconds(59).Ticks);
+        await ExtractWithCoverage();
+        Check(outputs.All(path => File.Exists(path) && !File.Exists(path + ".subtitleguard.pending")),
+            "complete coverage on one retry publishes the subtitle outputs");
+        Check(Simulation.CoveragePaths.All(path => !File.Exists(path)), "coverage evidence is removed after successful extraction");
+
+        var beginItem = typeof(NativeExtractionGuard).GetMethod("BeginItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var endItem = typeof(NativeExtractionGuard).GetMethod("EndItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var nativeOutputs = new List<string>();
+        var nativePathManager = new Mock<IPathManager>();
+        nativePathManager.Setup(value => value.GetSubtitlePath(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>()))
+            .Returns((string _, int index, string extension) =>
+            {
+                var path = Path.Combine(root, $"native-{index}{extension}");
+                nativeOutputs.Add(path);
+                Simulation.Paths = nativeOutputs.ToArray();
+                return path;
+            });
+        var nativeEncoderDependency = new Mock<IMediaEncoder>();
+        nativeEncoderDependency.Setup(value => value.GetInputPathArgument(source.Path, source)).Returns(source.Path);
+        var coverageEncoder = new SubtitleEncoder(NullLogger<SubtitleEncoder>.Instance, fileSystem.Object,
+            nativeEncoderDependency.Object, Mock.Of<IHttpClientFactory>(), Mock.Of<IMediaSourceManager>(),
+            Mock.Of<ISubtitleParser>(), nativePathManager.Object, Mock.Of<IServerConfigurationManager>());
+        var nativeExtractAll = encoderType.GetMethod("ExtractAllExtractableSubtitlesInternal", BindingFlags.Instance | BindingFlags.NonPublic,
+            [typeof(MediaSourceInfo), typeof(List<MediaStream>), typeof(CancellationToken)])!;
+        var extractableSubtitles = source.MediaStreams
+            .Where(stream => stream.Type == MediaStreamType.Subtitle && stream.IsExtractableSubtitleStream && stream.SupportsExternalStream)
+            .ToList();
+        Check(extractableSubtitles.Count == 2, "native extraction receives only extractable subtitle streams");
+        var shortcut = new Movie { Path = "/library/remote.strm", IsShortcut = true };
+        object?[] shortcutState = [shortcut, null];
+        var coverageFilesBefore = Simulation.CoveragePaths.Count;
+        Simulation.Paths = [];
+        Simulation.CoverageStartTicks.Clear();
+        Simulation.CoverageTicks.Clear();
+        Simulation.CoverageStartTicks.Enqueue(0);
+        Simulation.CoverageTicks.Enqueue(TimeSpan.FromMinutes(1).Ticks);
+        beginItem.Invoke(null, shortcutState);
+        try
+        {
+            await (Task)nativeExtractAll.Invoke(coverageEncoder, [source, extractableSubtitles, CancellationToken.None])!;
+            Check(Simulation.CoveragePaths.Count == coverageFilesBefore + 1,
+                "installed source-coverage hook injects framecrc for native .strm extraction");
+            Check(nativeOutputs.Count == 2 && nativeOutputs.All(path => File.Exists(path) && !File.Exists(path + ".subtitleguard.pending")),
+                "native .strm extraction publishes subtitle outputs only after full video coverage");
+        }
+        finally
+        {
+            endItem.Invoke(null, [shortcutState[1], null]);
+            coverageEncoder.Dispose();
+            Simulation.Paths = outputs;
+        }
+        Check(Simulation.CoveragePaths.All(path => !File.Exists(path)), "native .strm extraction cleans its framecrc side output");
         Console.WriteLine("Native Subtitle Guard checks passed; no media download or FFmpeg process was started.");
 
         Task Extract() => (Task)extract.Invoke(encoder, ["https://example.invalid/movie.mkv", "simulated", outputs, CancellationToken.None])!;
@@ -345,6 +469,135 @@ static async Task CheckNativeBehavior(bool registered)
     {
         simulated.UnpatchAll(simulated.Id);
         Directory.Delete(root, true);
+    }
+}
+
+static async Task CheckCoverageContract(string ffmpeg)
+{
+    var root = Path.Combine(Path.GetTempPath(), "subtitleguard-coverage-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    using var portProbe = new TcpListener(IPAddress.Loopback, 0);
+    portProbe.Start();
+    var port = ((IPEndPoint)portProbe.LocalEndpoint).Port;
+    portProbe.Stop();
+    using var server = new HttpListener();
+    server.Prefixes.Add($"http://127.0.0.1:{port}/");
+    var fixtures = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+    try
+    {
+        var subtitles = Path.Combine(root, "source.srt");
+        await File.WriteAllTextAsync(subtitles,
+            "1\n00:00:05,000 --> 00:00:07,000\nEARLY\n\n2\n00:00:55,000 --> 00:00:57,000\nLATE\n");
+        foreach (var (name, duration) in new[] { ("full", 60), ("short", 30) })
+        {
+            var source = Path.Combine(root, name + ".mkv");
+            await Run(["-f", "lavfi", "-i", $"color=c=black:s=160x90:r=10:d={duration}", "-i", subtitles,
+                "-map", "0:v:0", "-map", "1:s:0", "-c:v", "ffv1", "-g", "10", "-c:s", "srt", "-t", duration.ToString(CultureInfo.InvariantCulture), source]);
+            fixtures[name] = await File.ReadAllBytesAsync(source);
+        }
+        fixtures["bytecut"] = fixtures["full"][..(fixtures["full"].Length * 55 / 100)];
+
+        server.Start();
+        var serving = ServeAsync();
+        try
+        {
+            var appendCoverage = typeof(NativeExtractionGuard).GetMethod("AppendCoverageOutput", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var hasCoverage = typeof(NativeExtractionGuard).GetMethod("HasCompleteCoverage", BindingFlags.NonPublic | BindingFlags.Static)!;
+            foreach (var name in new[] { "full", "short", "bytecut" })
+            {
+                var subtitleOutput = Path.Combine(root, name + ".srt");
+                var coverageOutput = Path.Combine(root, name + ".framecrc");
+                var url = $"http://127.0.0.1:{port}/{name}";
+                var escapedSubtitleOutput = "\"" + subtitleOutput.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+                var arguments = $"-y -i {url} -map 0:1 -an -vn -c:s copy {escapedSubtitleOutput}";
+                arguments = (string)appendCoverage.Invoke(null, [arguments, coverageOutput, 0])!;
+                var output = await RunArguments(arguments);
+                var subtitleText = File.Exists(subtitleOutput) ? File.ReadAllText(subtitleOutput) : string.Empty;
+                var complete = (bool)hasCoverage.Invoke(null, [coverageOutput, TimeSpan.FromSeconds(60).Ticks])!;
+                if (name == "full")
+                {
+                    Check(output.ExitCode == 0 && subtitleText.Contains("LATE", StringComparison.Ordinal), "full remote fixture extracts late subtitle cue");
+                    Check(complete, "same-read video packet coverage accepts the complete source");
+                }
+                else if (name == "short")
+                {
+                    Check(output.ExitCode == 0 && subtitleText.Contains("EARLY", StringComparison.Ordinal)
+                        && !subtitleText.Contains("LATE", StringComparison.Ordinal), "short remote fixture reproduces clean nonempty partial subtitles");
+                    Check(!complete, "same-read video packet coverage rejects the short source against known runtime");
+                }
+                else
+                {
+                    var nonempty = subtitleText.Length > 0;
+                    Check(!complete && (!nonempty || (subtitleText.Contains("EARLY", StringComparison.Ordinal)
+                        && !subtitleText.Contains("LATE", StringComparison.Ordinal))),
+                        "same-read video packet coverage rejects the byte-truncated Matroska response");
+                }
+            }
+        }
+        finally
+        {
+            server.Stop();
+            await serving;
+        }
+        Console.WriteLine("Subtitle coverage contract passed; synthetic loopback media only.");
+
+        async Task<(int ExitCode, string StandardError)> RunArguments(string arguments)
+        {
+            var info = new System.Diagnostics.ProcessStartInfo(ffmpeg)
+            {
+                Arguments = "-hide_banner -loglevel error -nostdin " + arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            using var process = System.Diagnostics.Process.Start(info)!;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            try { await Task.WhenAll(stdout, stderr, process.WaitForExitAsync(timeout.Token)); }
+            finally { if (!process.HasExited) { process.Kill(true); await process.WaitForExitAsync(); } }
+            return (process.ExitCode, await stderr);
+        }
+
+        async Task ServeAsync()
+        {
+            try
+            {
+                while (server.IsListening)
+                {
+                    var context = await server.GetContextAsync();
+                    var name = context.Request.Url?.AbsolutePath is { } requestPath ? Path.GetFileName(requestPath) : string.Empty;
+                    if (!fixtures.TryGetValue(name, out var bytes))
+                    {
+                        context.Response.StatusCode = 404;
+                        context.Response.Close();
+                        continue;
+                    }
+                    context.Response.StatusCode = 200;
+                    context.Response.ContentType = "video/x-matroska";
+                    context.Response.ContentLength64 = bytes.Length;
+                    await context.Response.OutputStream.WriteAsync(bytes);
+                    context.Response.Close();
+                }
+            }
+            catch (HttpListenerException) { }
+            catch (ObjectDisposedException) { }
+        }
+    }
+    finally { Directory.Delete(root, true); }
+
+    async Task<string> Run(string[] arguments)
+    {
+        var info = new System.Diagnostics.ProcessStartInfo(ffmpeg) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        foreach (var argument in new[] { "-hide_banner", "-loglevel", "error", "-nostdin", "-y" }.Concat(arguments)) info.ArgumentList.Add(argument);
+        using var process = System.Diagnostics.Process.Start(info)!;
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
+        var errors = process.StandardError.ReadToEndAsync(timeout.Token);
+        try { await Task.WhenAll(output, errors, process.WaitForExitAsync(timeout.Token)); }
+        finally { if (!process.HasExited) { process.Kill(true); await process.WaitForExitAsync(); } }
+        if (process.ExitCode != 0 || (await errors).Length > 0) throw new IOException("Synthetic FFmpeg fixture command failed: " + await errors);
+        return await output;
     }
 }
 
@@ -365,19 +618,159 @@ static async Task Fails(Func<Task> action, string name)
     throw new InvalidOperationException("Expected failure: " + name);
 }
 
+static void CheckCoverageParser()
+{
+    var root = Path.Combine(Path.GetTempPath(), "subtitleguard-coverage-parser-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var method = typeof(NativeExtractionGuard).GetMethod("HasCompleteCoverage", BindingFlags.NonPublic | BindingFlags.Static)!;
+    var append = typeof(NativeExtractionGuard).GetMethod("AppendCoverageOutput", BindingFlags.NonPublic | BindingFlags.Static)!;
+    try
+    {
+        var strmShortcut = typeof(NativeExtractionGuard).GetMethod("IsStrmShortcut", BindingFlags.NonPublic | BindingFlags.Static)!;
+        Check((bool)strmShortcut.Invoke(null, [true, "/library/episode.strm"])!, "coverage eligibility recognizes a local .strm shortcut");
+        Check(!(bool)strmShortcut.Invoke(null, [true, "/library/episode.mkv"])!, "coverage eligibility leaves ordinary media paths unchanged");
+        Check(!(bool)strmShortcut.Invoke(null, [false, "/library/episode.strm"])!, "coverage eligibility requires Jellyfin shortcut metadata");
+        var beginItem = typeof(NativeExtractionGuard).GetMethod("BeginItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var endItem = typeof(NativeExtractionGuard).GetMethod("EndItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var requestScope = (AsyncLocal<bool>)typeof(NativeExtractionGuard).GetField("StrmSubtitleRequest", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var shortcutItem = (Movie)RuntimeHelpers.GetUninitializedObject(typeof(Movie));
+        shortcutItem.Path = "/library/episode.strm";
+        shortcutItem.IsShortcut = true;
+        var itemState = new object?[] { shortcutItem, null };
+        var priorScope = requestScope.Value;
+        beginItem.Invoke(null, itemState);
+        var isScoped = requestScope.Value;
+        endItem.Invoke(null, [itemState[1], null]);
+        Check(isScoped && requestScope.Value == priorScope, "Harmony item scope enables coverage only during .strm subtitle requests");
+
+        var beginRead = typeof(NativeExtractionGuard).GetMethod("BeginReadScope", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var endRead = typeof(NativeExtractionGuard).GetMethod("EndReadScope", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var currentRead = typeof(NativeExtractionGuard).GetField("CurrentRead", BindingFlags.NonPublic | BindingFlags.Static)!.GetValue(null)!;
+        var currentReadValue = currentRead.GetType().GetProperty("Value")!;
+        var priorReadRequest = requestScope.Value;
+        requestScope.Value = true;
+        var scopedSource = new MediaSourceInfo
+        {
+            Id = "scoped-source", Path = "http://example.invalid/video.mkv", IsRemote = true,
+            RunTimeTicks = TimeSpan.FromMinutes(1).Ticks,
+            MediaStreams = [new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264" }]
+        };
+        object?[] readState = [scopedSource, new MediaStream { Type = MediaStreamType.Subtitle, Codec = "srt", IsExternal = false }, null];
+        beginRead.Invoke(null, readState);
+        var sourceWasScoped = currentReadValue.GetValue(currentRead) is not null;
+        endRead.Invoke(null, [readState[2], null]);
+        var noVideoSource = new MediaSourceInfo
+        {
+            Id = "no-video-source", Path = "http://example.invalid/audio-only.mkv", IsRemote = true,
+            RunTimeTicks = TimeSpan.FromMinutes(1).Ticks,
+            MediaStreams = [new MediaStream { Type = MediaStreamType.Subtitle, Index = 0, Codec = "srt", IsExternal = false }]
+        };
+        readState = [noVideoSource, new MediaStream { Type = MediaStreamType.Subtitle, Codec = "srt", IsExternal = false }, null];
+        beginRead.Invoke(null, readState);
+        var noVideoWasScoped = currentReadValue.GetValue(currentRead) is not null;
+        endRead.Invoke(null, [readState[2], null]);
+        requestScope.Value = priorReadRequest;
+        Check(sourceWasScoped && !noVideoWasScoped, "legacy cache migration is limited to sources with a measurable video stream");
+
+        var coveragePath = Path.Combine(root, "coverage evidence.framecrc");
+        var arguments = (string)append.Invoke(null, ["-y -i https://example.invalid/media -map 0:1 -c:s copy out.srt", coveragePath, 2])!;
+        Check(arguments.Contains("-map 0:2 -c:v copy -an -sn -fs 67108864 -f framecrc \"" + coveragePath + "\"", StringComparison.Ordinal),
+            "coverage output uses the selected video map, fixed byte bound, and quoted temp path");
+
+        var cachePath = Path.Combine(root, "legacy.srt");
+        File.WriteAllText(cachePath, "nonempty legacy cache");
+        var readScopeType = typeof(NativeExtractionGuard).GetNestedType("ReadScope", BindingFlags.NonPublic)!;
+        var readScope = Activator.CreateInstance(readScopeType, ["https://example.invalid/media", "source-id", "etag-v1", TimeSpan.FromMinutes(1).Ticks])!;
+        var previousReadScope = currentReadValue.GetValue(currentRead);
+        currentReadValue.SetValue(currentRead, readScope);
+        var pendingCheck = typeof(NativeExtractionGuard).GetMethod("CheckPending", BindingFlags.NonPublic | BindingFlags.Static)!;
+        bool IsFreshFor(string sourceId, string eTag, long runtimeTicks)
+        {
+            var scope = Activator.CreateInstance(readScopeType, ["https://example.invalid/media", sourceId, eTag, runtimeTicks])!;
+            currentReadValue.SetValue(currentRead, scope);
+            object?[] values = [cachePath, "https://example.invalid/media", true];
+            return (bool)pendingCheck.Invoke(null, values)! && Equals(values[2], true);
+        }
+        try
+        {
+            object?[] freshness = [cachePath, "https://example.invalid/media", true];
+            Check(!(bool)pendingCheck.Invoke(null, freshness)! && Equals(freshness[2], false),
+                "unmarked legacy remote .strm cache is stale only when its subtitle is requested");
+
+            var coverageType = typeof(NativeExtractionGuard).GetNestedType("CoverageContext", BindingFlags.NonPublic)!;
+            var coverageContext = Activator.CreateInstance(coverageType, [TimeSpan.FromMinutes(1).Ticks, 0, "source-id", "etag-v1"])!;
+            var writeReceipt = typeof(NativeExtractionGuard).GetMethod("WriteCoverageReceipt", BindingFlags.NonPublic | BindingFlags.Static)!;
+            writeReceipt.Invoke(null, [cachePath, coverageContext]);
+            freshness = [cachePath, "https://example.invalid/media", true];
+            Check((bool)pendingCheck.Invoke(null, freshness)! && Equals(freshness[2], true),
+                "cache with matching source-bound coverage receipt retains its fast path");
+            Check(!IsFreshFor("different-source", "etag-v1", TimeSpan.FromMinutes(1).Ticks), "coverage receipt is bound to the media-source ID");
+            Check(!IsFreshFor("source-id", "etag-v2", TimeSpan.FromMinutes(1).Ticks), "coverage receipt is bound to the source ETag");
+            Check(!IsFreshFor("source-id", "etag-v1", TimeSpan.FromMinutes(2).Ticks), "coverage receipt is bound to the source runtime");
+
+            File.AppendAllText(cachePath, " changed");
+            Check(!IsFreshFor("source-id", "etag-v1", TimeSpan.FromMinutes(1).Ticks), "coverage receipt is bound to the subtitle cache size");
+            File.WriteAllText(cachePath, "nonempty legacy cache");
+            writeReceipt.Invoke(null, [cachePath, coverageContext]);
+            File.SetLastWriteTimeUtc(cachePath, DateTime.UtcNow.AddSeconds(-10));
+            Check(!IsFreshFor("source-id", "etag-v1", TimeSpan.FromMinutes(1).Ticks), "coverage receipt is bound to the subtitle cache modification time");
+
+            currentReadValue.SetValue(currentRead, readScope);
+            freshness = [cachePath, "https://example.invalid/other", true];
+            Check((bool)pendingCheck.Invoke(null, freshness)! && Equals(freshness[2], true),
+                "unrelated source paths keep the native cache decision");
+            freshness = [cachePath + ".mks", "https://example.invalid/media", true];
+            Check((bool)pendingCheck.Invoke(null, freshness)! && Equals(freshness[2], true),
+                "MKS sidecar caches are outside the video-coverage migration");
+        }
+        finally { currentReadValue.SetValue(currentRead, previousReadScope); }
+
+        bool CheckCoverage(string name, long startTicks, long durationTicks)
+        {
+            var path = Path.Combine(root, name + ".framecrc");
+            File.WriteAllText(path, $"#tb 0: 1/{TimeSpan.TicksPerSecond}\n#media_type 0: video\n#codec_id 0: h264\n#dimensions 0: 160x90\n#sar 0: 1/1\n0, {startTicks}, {startTicks}, {durationTicks}, 1, 0x00\n");
+            return (bool)method.Invoke(null, [path, TimeSpan.FromMinutes(1).Ticks])!;
+        }
+
+        Check(CheckCoverage("complete-offset", TimeSpan.FromSeconds(30).Ticks, TimeSpan.FromSeconds(59).Ticks),
+            "coverage accepts a nonzero-start source ending within the one-second container tolerance");
+        Check(!CheckCoverage("short-offset", TimeSpan.FromSeconds(50).Ticks, TimeSpan.FromSeconds(20).Ticks),
+            "coverage measures elapsed span instead of accepting a high absolute PTS");
+
+        var malformed = Path.Combine(root, "malformed.framecrc");
+        File.WriteAllText(malformed, "#tb invalid\n0, bad, record\n");
+        Check(!(bool)method.Invoke(null, [malformed, TimeSpan.FromMinutes(1).Ticks])!, "malformed packet evidence fails closed");
+        Console.WriteLine("Subtitle coverage parser checks passed; no FFmpeg process or media source used.");
+    }
+    finally { Directory.Delete(root, true); }
+}
+
 public static class Simulation
 {
     public static string[] Paths { get; set; } = [];
     public static Task<(int, string)> Result { get; set; } = Task.FromResult((0, string.Empty));
     public static Queue<Task<(int, string)>> Results { get; } = new();
+    public static Queue<long> CoverageTicks { get; } = new();
+    public static Queue<long> CoverageStartTicks { get; } = new();
+    public static List<string> CoveragePaths { get; } = [];
     public static int ProcessCalls { get; set; }
-    public static bool Process(ref Task<(int, string)> __result)
+    public static bool Process(string __0, ref Task<(int, string)> __result)
     {
         ProcessCalls++;
         foreach (var path in Paths) File.WriteAllText(path, "1\n00:00:01,000 --> 00:00:02,000\nPartial or complete fixture\n");
+        var match = Regex.Match(__0, "-f framecrc (?:\"([^\"]+)\"|(\\S+))");
+        if (match.Success)
+        {
+            var path = match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value;
+            var startTicks = CoverageStartTicks.Count > 0 ? CoverageStartTicks.Dequeue() : 0;
+            var ticks = CoverageTicks.Count > 0 ? CoverageTicks.Dequeue() : TimeSpan.FromMinutes(1).Ticks;
+            File.WriteAllText(path, $"#tb 0: 1/{TimeSpan.TicksPerSecond}\n#media_type 0: video\n#codec_id 0: h264\n#dimensions 0: 160x90\n#sar 0: 1/1\n0, {startTicks}, {startTicks}, {ticks}, 1, 0x00\n");
+            CoveragePaths.Add(path);
+        }
         __result = Results.Count > 0 ? Results.Dequeue() : Result;
         return false;
     }
+
     public static bool Read(ref Task<SubtitleEncoder.SubtitleInfo> __result)
     {
         __result = Task.FromResult(new SubtitleEncoder.SubtitleInfo { Path = Paths[0] });
