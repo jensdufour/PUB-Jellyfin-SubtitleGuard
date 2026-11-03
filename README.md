@@ -8,7 +8,7 @@ custom media downloader or replacement encoder is installed.
 
 ## Native HTTP Recovery - 0.4.11
 
-The source candidate enables bounded FFmpeg HTTP reconnects only when appending
+Version0.4.11 enables bounded FFmpeg HTTP reconnects only when appending
 the existing remote `.strm` video-coverage output. Local/external extraction and
 requests without measurable source coverage keep native arguments unchanged.
 Retries are limited per native operation, with2maximum retries,2seconds maximum
@@ -24,9 +24,13 @@ all-output nonempty checks, source-bound receipts and the one outer retry remain
 Coherent Jellyfin12.4 references and FFmpeg8.1.3 passed parser, native extraction,
 collectible-loader and full/interrupted/resumed/unrecoverable loopback checks.
 Synthetic recovered cues and video packets match the complete reference exactly.
-Release preparation is complete; supported-version release CI remains required
-before publication. Real-provider/client acceptance is
-not claimed, and this extraction change does not repair audio/video timing.
+[Release0.4.11](https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/tag/v0.4.11)
+passed checksum-pinned Jellyfin12.0,12.1 and12.4 release CI, including native
+guards, collectible loading, reconnect fixtures and unchanged HLS contracts.
+The repository catalog is published. ZIP SHA256:
+`45f11b1ed0ac29123ced08477d72bfb8fc3b66ca98c98b70d6756192dd2200a4`.
+Real-provider/client acceptance is not claimed, and this extraction change does
+not repair audio/video timing. A full server restart is required for activation.
 
 ## Remote STRM Extraction Coverage - 0.4.10
 
