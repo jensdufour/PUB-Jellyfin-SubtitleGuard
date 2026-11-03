@@ -597,7 +597,7 @@ static async Task CheckCoverageContract(string ffmpeg)
         {
             var info = new System.Diagnostics.ProcessStartInfo(ffmpeg)
             {
-                Arguments = "-hide_banner -loglevel warning -nostdin " + arguments,
+                Arguments = "-hide_banner -loglevel warning -stats -stats_period 0.01 -nostdin " + arguments,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false
@@ -765,6 +765,11 @@ static void CheckCoverageParser()
         Check((bool)recovered.Invoke(null, [(0, resumedError), true])!, "matching recovered EOF is accepted only with complete coverage");
         Check(!(bool)recovered.Invoke(null, [(0, resumedError), false])!, "reconnect text cannot validate incomplete coverage");
         Check(!(bool)recovered.Invoke(null, [(1, resumedError), true])!, "nonzero extraction exit cannot be recovered");
+        const string progress = "frame= 2868 fps=1434 q=-1.0 size=       4KiB time=00:01:59.53 bitrate=   0.3kbits/s speed=59.8x elapsed=0:00:02.00    \r";
+        Check((bool)recovered.Invoke(null, [(0, progress + resumedError + progress), true])!,
+            "recovered EOF is recognized between FFmpeg carriage-return progress updates");
+        Check((bool)recovered.Invoke(null, [(0, progress + resumedError + progress + resumedError.Replace("1234", "9999", StringComparison.Ordinal) + progress), true])!,
+            "multiple recovered EOF pairs interleaved with progress output are discounted");
         foreach (var error in new[] { "[error] decoder failure", "[fatal] encoding failed", "Error during demuxing: Input/output error", "Connection reset by peer", "Stream ends prematurely" })
             Check(!(bool)recovered.Invoke(null, [(0, resumedError + error), true])!, "remaining failure still rejects recovered transport: " + error);
         Check(!(bool)recovered.Invoke(null, [(0, resumedError.Replace("at 1234 in", "at 1235 in", StringComparison.Ordinal)), true])!,

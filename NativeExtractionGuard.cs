@@ -390,10 +390,25 @@ public sealed class NativeExtractionGuard : IDisposable
     private static bool Recovered((int ExitCode, string StandardError) result, bool completeCoverage)
     {
         if (result.ExitCode != 0 || !completeCoverage) return false;
-        var remaining = Regex.Replace(result.StandardError,
-            @"^\[http @ (?<connection>[0-9a-fx]+)\]\s+(?:\[(?:warning|error)\]\s+)?Stream ends prematurely at (?<offset>\d+), should be \d+\r?\n\[http @ \k<connection>\]\s+(?:\[(?:warning|error)\]\s+)?Will reconnect at \k<offset> in \d+ second\(s\), error=Input/output error\.\r?$",
-            string.Empty, RegexOptions.Multiline | RegexOptions.IgnoreCase);
-        return remaining != result.StandardError && !Failed((0, remaining));
+        // FFmpeg separates progress updates with \r, so a diagnostic can follow one on the same physical line.
+        var lines = result.StandardError.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim()).Where(line => !line.StartsWith("frame=", StringComparison.Ordinal)
+                && !line.StartsWith("size=", StringComparison.Ordinal)).ToList();
+        var remaining = new List<string>();
+        var recovered = false;
+        for (var index = 0; index < lines.Count; index++)
+        {
+            var eof = Regex.Match(lines[index], @"^\[http @ (?<connection>[0-9a-fx]+)\]\s+(?:\[(?:warning|error)\]\s+)?Stream ends prematurely at (?<offset>\d+), should be \d+$", RegexOptions.IgnoreCase);
+            if (eof.Success && index + 1 < lines.Count && Regex.IsMatch(lines[index + 1],
+                @"^\[http @ " + Regex.Escape(eof.Groups["connection"].Value) + @"\]\s+(?:\[(?:warning|error)\]\s+)?Will reconnect at " + eof.Groups["offset"].Value + @" in \d+ second\(s\), error=Input/output error\.$", RegexOptions.IgnoreCase))
+            {
+                recovered = true;
+                index++;
+                continue;
+            }
+            remaining.Add(lines[index]);
+        }
+        return recovered && !Failed((0, string.Join('\n', remaining)));
     }
 
     private static bool Retryable(string standardError) => new[]

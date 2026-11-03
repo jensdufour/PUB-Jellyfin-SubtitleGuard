@@ -1,12 +1,19 @@
 # Subtitle Guard
 
-**0.4.11: native subtitle-cache guards, bounded native HTTP recovery,
+**0.4.12: native subtitle-cache guards, bounded native HTTP recovery,
 optional windowed ASS burn-in, and same-read coverage for remote `.strm` extraction.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
 
 ## Native HTTP Recovery - 0.4.11
+
+0.4.12 fixes a live defect in 0.4.11: FFmpeg prints progress updates separated by
+carriage returns, so a recovered-EOF diagnostic can start mid-line and the
+newline-anchored matcher rejected a fully covered extraction (Scrubs S02E06,
+reads reconnected at 109MB and 247MB yet all outputs were deleted). The matcher
+now splits on both separators, ignores progress lines, and discounts only an
+adjacent same-connection, same-offset pair; everything left must still pass.
 
 Version0.4.11 enables bounded FFmpeg HTTP reconnects only when appending
 the existing remote `.strm` video-coverage output. Local/external extraction and
