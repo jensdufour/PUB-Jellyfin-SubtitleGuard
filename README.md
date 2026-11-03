@@ -1,10 +1,32 @@
 # Subtitle Guard
 
-**0.4.10: native subtitle-cache guards, one bounded transport retry,
+**0.4.11: native subtitle-cache guards, bounded native HTTP recovery,
 optional windowed ASS burn-in, and same-read coverage for remote `.strm` extraction.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
+
+## Native HTTP Recovery - 0.4.11
+
+The source candidate enables bounded FFmpeg HTTP reconnects only when appending
+the existing remote `.strm` video-coverage output. Local/external extraction and
+requests without measurable source coverage keep native arguments unchanged.
+Retries are limited per native operation, with2maximum retries,2seconds maximum
+delay and4seconds total delay; the existing native process deadline is unchanged.
+
+Acceptance requires exit0 and complete same-read video coverage. Only an exact
+HTTP premature-EOF diagnostic immediately paired with a reconnect at the same
+connection and byte offset is discounted. Every remaining error still follows
+the existing rejection/cleanup path. Cancelled requests cannot publish or retry
+even when the process has already completed successfully. Pending markers,
+all-output nonempty checks, source-bound receipts and the one outer retry remain.
+
+Coherent Jellyfin12.4 references and FFmpeg8.1.3 passed parser, native extraction,
+collectible-loader and full/interrupted/resumed/unrecoverable loopback checks.
+Synthetic recovered cues and video packets match the complete reference exactly.
+Release preparation is complete; supported-version release CI remains required
+before publication. Real-provider/client acceptance is
+not claimed, and this extraction change does not repair audio/video timing.
 
 ## Remote STRM Extraction Coverage - 0.4.10
 
@@ -51,6 +73,23 @@ no background job, prefetch, loop or playback-policy change. A retry can still t
 as long as another native source read. GitHub Actions published0.4.3 after Jellyfin
 12.0/12.1, collectible-loader and FFmpeg contract checks; CT110 then activated the
 repository package in one idle restart with its existing windowed mode retained.
+
+### Recovered EOF Regression
+
+The existing `--coverage-contract` runner also tests a deliberately interrupted
+HTTP response, a successful byte-range resume, and an unrecoverable resume.
+With bounded native reconnect options, the recovered synthetic source preserves
+the complete subtitle text and every reference video packet exactly, but stderr
+still contains `Stream ends prematurely`. The current Guard deliberately rejects
+that diagnostic in deployed0.4.10; the unreleased candidate accepts only paired
+recovery diagnostics with complete coverage and no remaining failure.
+
+The unrecoverable source can return exit0 with nonempty partial subtitles and
+incomplete video coverage. Exit code, output size or a reconnect message alone
+must never establish successful extraction. Native retry limits are per operation,
+not a whole-demuxer request-count limit; the contract retains a30second process
+deadline. Future recovery changes need recovered and unrecoverable cases, exact
+synthetic parity, coverage, cancellation and permanent-error checks together.
 
 ## Optional Native HLS Preparation
 

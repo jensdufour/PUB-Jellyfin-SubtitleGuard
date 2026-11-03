@@ -320,6 +320,7 @@ static async Task CheckNativeBehavior(bool registered)
         Simulation.Paths = outputs;
         Simulation.Result = Task.FromResult((0, string.Empty));
         await Extract();
+        Check(Simulation.LastArguments == "simulated", "extraction without source coverage keeps native arguments unchanged");
         Check(outputs.All(File.Exists) && outputs.All(path => !File.Exists(path + ".subtitleguard.pending")), "successful native extraction publishes all tracks");
         Check((bool)fresh.Invoke(encoder, [outputs[0], "https://example.invalid/movie.mkv"])!, "completed native cache remains reusable");
 
@@ -414,6 +415,29 @@ static async Task CheckNativeBehavior(bool registered)
             "complete coverage on one retry publishes the subtitle outputs");
         Check(Simulation.CoveragePaths.All(path => !File.Exists(path)), "coverage evidence is removed after successful extraction");
 
+        const string recoveredTransport = "[http @ 0x123abc] Stream ends prematurely at 1234, should be 5678\n[http @ 0x123abc] Will reconnect at 1234 in 0 second(s), error=Input/output error.\n";
+        Simulation.Result = Task.FromResult((0, recoveredTransport));
+        var beforeRecovered = Simulation.ProcessCalls;
+        await ExtractWithCoverage();
+        Check(Simulation.ProcessCalls == beforeRecovered + 1 && outputs.All(path => File.Exists(path) && !File.Exists(path + ".subtitleguard.pending")),
+            "fully covered native reconnect publishes tracks without restarting extraction");
+        Check(Simulation.LastArguments.StartsWith("-reconnect 1 ", StringComparison.Ordinal), "covered native extraction receives reconnect input options");
+        Simulation.Result = Task.FromResult((0, recoveredTransport + "[error] decoder failure"));
+        await Fails(ExtractWithCoverage, "permanent decoder error remains rejected after a transport reconnect");
+        Check(outputs.All(path => !File.Exists(path) && File.Exists(path + ".subtitleguard.pending")),
+            "permanent failure after reconnect keeps every output unpublished");
+        using (var cancelled = new CancellationTokenSource())
+        {
+            cancelled.Cancel();
+            var validate = typeof(NativeExtractionGuard).GetMethod("ValidateProcessAsync", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var beforeCancelled = Simulation.ProcessCalls;
+            await Fails(() => (Task)validate.Invoke(null,
+                [encoder, "simulated", cancelled.Token, process, Task.FromResult((0, recoveredTransport)), true])!,
+                "cancelled successful process cannot publish recovered extraction");
+            Check(Simulation.ProcessCalls == beforeCancelled, "cancelled recovery does not restart a native process");
+        }
+        Simulation.Result = Task.FromResult((0, string.Empty));
+
         var beginItem = typeof(NativeExtractionGuard).GetMethod("BeginItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
         var endItem = typeof(NativeExtractionGuard).GetMethod("EndItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
         var nativeOutputs = new List<string>();
@@ -483,6 +507,7 @@ static async Task CheckCoverageContract(string ffmpeg)
     using var server = new HttpListener();
     server.Prefixes.Add($"http://127.0.0.1:{port}/");
     var fixtures = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+    var requests = new Dictionary<string, List<long>>(StringComparer.Ordinal);
     try
     {
         var subtitles = Path.Combine(root, "source.srt");
@@ -496,6 +521,7 @@ static async Task CheckCoverageContract(string ffmpeg)
             fixtures[name] = await File.ReadAllBytesAsync(source);
         }
         fixtures["bytecut"] = fixtures["full"][..(fixtures["full"].Length * 55 / 100)];
+        foreach (var name in new[] { "interrupted", "resumed", "exhausted" }) fixtures[name] = fixtures["full"];
 
         server.Start();
         var serving = ServeAsync();
@@ -503,7 +529,11 @@ static async Task CheckCoverageContract(string ffmpeg)
         {
             var appendCoverage = typeof(NativeExtractionGuard).GetMethod("AppendCoverageOutput", BindingFlags.NonPublic | BindingFlags.Static)!;
             var hasCoverage = typeof(NativeExtractionGuard).GetMethod("HasCompleteCoverage", BindingFlags.NonPublic | BindingFlags.Static)!;
-            foreach (var name in new[] { "full", "short", "bytecut" })
+            var failed = typeof(NativeExtractionGuard).GetMethod("Failed", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var recovered = typeof(NativeExtractionGuard).GetMethod("Recovered", BindingFlags.NonPublic | BindingFlags.Static)!;
+            var referenceSubtitles = string.Empty;
+            string[] referencePackets = [];
+            foreach (var name in new[] { "full", "short", "bytecut", "interrupted", "resumed", "exhausted" })
             {
                 var subtitleOutput = Path.Combine(root, name + ".srt");
                 var coverageOutput = Path.Combine(root, name + ".framecrc");
@@ -511,6 +541,7 @@ static async Task CheckCoverageContract(string ffmpeg)
                 var escapedSubtitleOutput = "\"" + subtitleOutput.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
                 var arguments = $"-y -i {url} -map 0:1 -an -vn -c:s copy {escapedSubtitleOutput}";
                 arguments = (string)appendCoverage.Invoke(null, [arguments, coverageOutput, 0])!;
+                if (name == "interrupted") arguments = arguments.Replace("-reconnect 1 ", "-reconnect 0 ", StringComparison.Ordinal);
                 var output = await RunArguments(arguments);
                 var subtitleText = File.Exists(subtitleOutput) ? File.ReadAllText(subtitleOutput) : string.Empty;
                 var complete = (bool)hasCoverage.Invoke(null, [coverageOutput, TimeSpan.FromSeconds(60).Ticks])!;
@@ -518,12 +549,33 @@ static async Task CheckCoverageContract(string ffmpeg)
                 {
                     Check(output.ExitCode == 0 && subtitleText.Contains("LATE", StringComparison.Ordinal), "full remote fixture extracts late subtitle cue");
                     Check(complete, "same-read video packet coverage accepts the complete source");
+                    referenceSubtitles = subtitleText;
+                    referencePackets = File.ReadAllLines(coverageOutput).Where(line => !line.StartsWith('#')).ToArray();
                 }
                 else if (name == "short")
                 {
                     Check(output.ExitCode == 0 && subtitleText.Contains("EARLY", StringComparison.Ordinal)
                         && !subtitleText.Contains("LATE", StringComparison.Ordinal), "short remote fixture reproduces clean nonempty partial subtitles");
                     Check(!complete, "same-read video packet coverage rejects the short source against known runtime");
+                }
+                else if (name == "resumed")
+                {
+                    Check(requests[name].Count > 1 && requests[name].Skip(1).Any(offset => offset > 0),
+                        "native reconnect resumes a deliberately interrupted HTTP response using a byte range");
+                    Check(output.ExitCode == 0 && complete && subtitleText == referenceSubtitles,
+                        "resumed extraction retains exact early and late subtitle cues and complete coverage");
+                    Check(File.ReadAllLines(coverageOutput).Where(line => !line.StartsWith('#')).SequenceEqual(referencePackets),
+                        "resumed extraction preserves every reference video packet without gaps or duplicates");
+                    Check(output.StandardError.Contains("Stream ends prematurely", StringComparison.OrdinalIgnoreCase)
+                        && (bool)failed.Invoke(null, [output])! && (bool)recovered.Invoke(null, [output, complete])!,
+                        "guard distinguishes recovered EOF diagnostics only after exact fixture parity and coverage pass");
+                }
+                else if (name == "exhausted")
+                {
+                    Check(requests[name].Count > 1 && requests[name].Skip(1).All(offset => offset == requests[name][1] && offset > 0),
+                        "unrecoverable HTTP resume retries the failed byte range within the process deadline");
+                    Check(!complete && (bool)failed.Invoke(null, [output])! && !(bool)recovered.Invoke(null, [output, complete])!,
+                        "unrecoverable interruption remains rejected despite nonempty subtitle output");
                 }
                 else
                 {
@@ -545,7 +597,7 @@ static async Task CheckCoverageContract(string ffmpeg)
         {
             var info = new System.Diagnostics.ProcessStartInfo(ffmpeg)
             {
-                Arguments = "-hide_banner -loglevel error -nostdin " + arguments,
+                Arguments = "-hide_banner -loglevel warning -nostdin " + arguments,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false
@@ -573,11 +625,40 @@ static async Task CheckCoverageContract(string ffmpeg)
                         context.Response.Close();
                         continue;
                     }
-                    context.Response.StatusCode = 200;
+                    var offset = 0L;
+                    if (context.Request.Headers["Range"] is { } range)
+                    {
+                        var match = Regex.Match(range, "^bytes=(\\d+)-$");
+                        if (!match.Success || !long.TryParse(match.Groups[1].Value, out offset) || offset >= bytes.Length)
+                        {
+                            context.Response.StatusCode = 416;
+                            context.Response.Close();
+                            continue;
+                        }
+                    }
+                    if (!requests.TryGetValue(name, out var offsets)) requests[name] = offsets = [];
+                    offsets.Add(offset);
+                    if (name == "exhausted" && offsets.Count > 1)
+                    {
+                        context.Response.StatusCode = 503;
+                        context.Response.Close();
+                        continue;
+                    }
+                    context.Response.StatusCode = offset == 0 ? 200 : 206;
+                    context.Response.Headers["Accept-Ranges"] = "bytes";
+                    if (offset > 0) context.Response.Headers["Content-Range"] = $"bytes {offset}-{bytes.Length - 1}/{bytes.Length}";
                     context.Response.ContentType = "video/x-matroska";
-                    context.Response.ContentLength64 = bytes.Length;
-                    await context.Response.OutputStream.WriteAsync(bytes);
-                    context.Response.Close();
+                    context.Response.ContentLength64 = bytes.Length - offset;
+                    if (name is "interrupted" or "resumed" or "exhausted" && offsets.Count == 1)
+                    {
+                        await context.Response.OutputStream.WriteAsync(bytes.AsMemory((int)offset, (bytes.Length - (int)offset) * 55 / 100));
+                        context.Response.Abort();
+                    }
+                    else
+                    {
+                        await context.Response.OutputStream.WriteAsync(bytes.AsMemory((int)offset));
+                        context.Response.Close();
+                    }
                 }
             }
             catch (HttpListenerException) { }
@@ -674,8 +755,22 @@ static void CheckCoverageParser()
 
         var coveragePath = Path.Combine(root, "coverage evidence.framecrc");
         var arguments = (string)append.Invoke(null, ["-y -i https://example.invalid/media -map 0:1 -c:s copy out.srt", coveragePath, 2])!;
+        Check(arguments.StartsWith("-reconnect 1 -reconnect_on_network_error 1 -reconnect_max_retries 2 -reconnect_delay_max 2 -reconnect_delay_total_max 4 -y -i ", StringComparison.Ordinal),
+            "covered extraction enables bounded native HTTP reconnect before the input");
         Check(arguments.Contains("-map 0:2 -c:v copy -an -sn -fs 67108864 -f framecrc \"" + coveragePath + "\"", StringComparison.Ordinal),
             "coverage output uses the selected video map, fixed byte bound, and quoted temp path");
+
+        var recovered = typeof(NativeExtractionGuard).GetMethod("Recovered", BindingFlags.NonPublic | BindingFlags.Static)!;
+        const string resumedError = "[http @ 0x123abc] Stream ends prematurely at 1234, should be 5678\n[http @ 0x123abc] Will reconnect at 1234 in 0 second(s), error=Input/output error.\n";
+        Check((bool)recovered.Invoke(null, [(0, resumedError), true])!, "matching recovered EOF is accepted only with complete coverage");
+        Check(!(bool)recovered.Invoke(null, [(0, resumedError), false])!, "reconnect text cannot validate incomplete coverage");
+        Check(!(bool)recovered.Invoke(null, [(1, resumedError), true])!, "nonzero extraction exit cannot be recovered");
+        foreach (var error in new[] { "[error] decoder failure", "[fatal] encoding failed", "Error during demuxing: Input/output error", "Connection reset by peer", "Stream ends prematurely" })
+            Check(!(bool)recovered.Invoke(null, [(0, resumedError + error), true])!, "remaining failure still rejects recovered transport: " + error);
+        Check(!(bool)recovered.Invoke(null, [(0, resumedError.Replace("at 1234 in", "at 1235 in", StringComparison.Ordinal)), true])!,
+            "reconnect must resume the interrupted byte offset");
+        Check(!(bool)recovered.Invoke(null, [(0, resumedError.Replace("0x123abc] Will", "0x456abc] Will", StringComparison.Ordinal)), true])!,
+            "reconnect must match the interrupted HTTP connection");
 
         var cachePath = Path.Combine(root, "legacy.srt");
         File.WriteAllText(cachePath, "nonempty legacy cache");
@@ -754,9 +849,11 @@ public static class Simulation
     public static Queue<long> CoverageStartTicks { get; } = new();
     public static List<string> CoveragePaths { get; } = [];
     public static int ProcessCalls { get; set; }
+    public static string LastArguments { get; set; } = string.Empty;
     public static bool Process(string __0, ref Task<(int, string)> __result)
     {
         ProcessCalls++;
+        LastArguments = __0;
         foreach (var path in Paths) File.WriteAllText(path, "1\n00:00:01,000 --> 00:00:02,000\nPartial or complete fixture\n");
         var match = Regex.Match(__0, "-f framecrc (?:\"([^\"]+)\"|(\\S+))");
         if (match.Success)

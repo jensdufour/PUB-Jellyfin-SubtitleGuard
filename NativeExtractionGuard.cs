@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.MediaEncoding;
 using HarmonyLib;
@@ -191,7 +192,7 @@ public sealed class NativeExtractionGuard : IDisposable
     }
 
     internal static string AppendCoverageOutput(string arguments, string coveragePath, int videoStreamIndex) =>
-        string.Concat(arguments,
+        string.Concat("-reconnect 1 -reconnect_on_network_error 1 -reconnect_max_retries 2 -reconnect_delay_max 2 -reconnect_delay_total_max 4 ", arguments,
             " -map 0:", videoStreamIndex.ToString(CultureInfo.InvariantCulture),
             " -c:v copy -an -sn -fs ", MaximumCoverageBytes.ToString(CultureInfo.InvariantCulture),
             " -f framecrc \"", coveragePath, "\"");
@@ -357,9 +358,10 @@ public sealed class NativeExtractionGuard : IDisposable
         CancellationToken cancellationToken, MethodBase processMethod, Task<(int ExitCode, string StandardError)> process, bool allowRetry)
     {
         var result = await process.ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         var coverage = SourceCoverage.Value;
         var coverageIncomplete = CoverageIncomplete(coverage);
-        var failed = Failed(result);
+        var failed = Failed(result) && !Recovered(result, coverage is not null && !coverageIncomplete);
         if (!failed && !coverageIncomplete) return result;
         var coverageRetryable = !failed && coverageIncomplete;
         if (!allowRetry || cancellationToken.IsCancellationRequested || (!Retryable(result.StandardError) && !coverageRetryable))
@@ -384,6 +386,15 @@ public sealed class NativeExtractionGuard : IDisposable
             "File ended prematurely", "Stream ends prematurely", "Error during demuxing",
             "Input/output error", "Connection reset by peer", "[error]", "[fatal]"
         }.Any(message => result.StandardError.Contains(message, StringComparison.OrdinalIgnoreCase));
+
+    private static bool Recovered((int ExitCode, string StandardError) result, bool completeCoverage)
+    {
+        if (result.ExitCode != 0 || !completeCoverage) return false;
+        var remaining = Regex.Replace(result.StandardError,
+            @"^\[http @ (?<connection>[0-9a-fx]+)\]\s+(?:\[(?:warning|error)\]\s+)?Stream ends prematurely at (?<offset>\d+), should be \d+\r?\n\[http @ \k<connection>\]\s+(?:\[(?:warning|error)\]\s+)?Will reconnect at \k<offset> in \d+ second\(s\), error=Input/output error\.\r?$",
+            string.Empty, RegexOptions.Multiline | RegexOptions.IgnoreCase);
+        return remaining != result.StandardError && !Failed((0, remaining));
+    }
 
     private static bool Retryable(string standardError) => new[]
         {
