@@ -78,6 +78,7 @@ internal sealed class AssWindowCache(Func<string> encoderPath, string root, Canc
                             }
                         }
                         var lines = await File.ReadAllLinesAsync(pending, token).ConfigureAwait(false);
+                        lines = AssStyle.Normalize(lines)?.ToArray() ?? lines;
                         var header = string.Join('\n', lines.Where(line => !line.StartsWith("Dialogue:", StringComparison.Ordinal))) + "\n";
                         if (!header.Contains("[Events]", StringComparison.Ordinal)
                             || !header.Contains("Format: Layer, Start, End,", StringComparison.Ordinal)

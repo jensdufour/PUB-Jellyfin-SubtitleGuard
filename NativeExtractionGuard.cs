@@ -327,6 +327,19 @@ public sealed class NativeExtractionGuard : IDisposable
 
     private static void ExtractionFinished(IReadOnlyList<string> __2, ref Task __result) => __result = CompleteAsync(__result, __2, SourceCoverage.Value);
 
+    private static void NormalizeAssFile(string path)
+    {
+        var normalized = AssStyle.Normalize(File.ReadAllLines(path));
+        if (normalized is null || !normalized.Any(line => line.StartsWith("Dialogue:", StringComparison.Ordinal))) return;
+        var temporary = path + "." + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".tmp";
+        try
+        {
+            File.WriteAllText(temporary, string.Join('\n', normalized) + "\n", new UTF8Encoding(false));
+            File.Move(temporary, path, true);
+        }
+        finally { File.Delete(temporary); }
+    }
+
     private static async Task CompleteAsync(Task extraction, IReadOnlyList<string> paths, CoverageContext? coverage)
     {
         try
@@ -339,6 +352,7 @@ public sealed class NativeExtractionGuard : IDisposable
             }
             if (coverage is not null)
             {
+                foreach (var path in paths.Where(path => path.EndsWith(".ass", StringComparison.OrdinalIgnoreCase))) NormalizeAssFile(path);
                 foreach (var path in paths) WriteCoverageReceipt(path, coverage);
             }
             foreach (var path in paths) File.Delete(PendingPath(path));

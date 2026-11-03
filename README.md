@@ -1,10 +1,25 @@
 # Subtitle Guard
 
-**0.4.12: native subtitle-cache guards, bounded native HTTP recovery,
+**0.4.13: native subtitle-cache guards, bounded native HTTP recovery,
 optional windowed ASS burn-in, and same-read coverage for remote `.strm` extraction.**
 Four production C# files. Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
+
+## Native HTTP Recovery - 0.4.11
+
+0.4.13 adds a standard ASS style. Jellyfin Web draws `ass`/`ssa` tracks itself with
+the script's own style and ignores the user's subtitle appearance settings, so a
+script authored at the wrong scale (CIA S1E1: `Fontsize 16` on a 1920x1080 canvas,
+about 1.5 percent of the height) renders tiny. For ASS extracted from a covered
+remote `.strm` source, Guard now rewrites the cache before its coverage receipt is
+written: one `Default` style, bottom centre, white with a black outline, size 5
+percent of `PlayResY`; override tags, positions, layers, drawings and effects are
+removed; event times and lines are untouched. Empty events are dropped. Files that
+are not plain V4+ scripts with the standard event format are left unchanged. The
+same normalization is applied to bounded burn-in window headers. Existing caches
+keep their old style until re-extracted. Plain-text (SubRip) tracks are unaffected
+and already follow the user's appearance settings.
 
 ## Native HTTP Recovery - 0.4.11
 

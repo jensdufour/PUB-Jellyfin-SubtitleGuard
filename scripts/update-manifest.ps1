@@ -15,7 +15,7 @@ if ($existing.Count) {
 }
 $entry = [pscustomobject]@{
     version = $Version
-    changelog = "SubtitleGuard ${Version}: fixes recovery of covered remote .strm subtitle extraction when FFmpeg progress output precedes a matched HTTP premature-EOF and reconnect pair. Recovery still requires successful exit, complete same-read video coverage and no remaining failure. Cancellation, incomplete-output rejection, source-bound cache receipts and one outer retry remain. Optional windowed ASS HLS burn-in is unchanged. Requires Jellyfin 12 and a full restart."
+    changelog = "SubtitleGuard ${Version}: restyles ASS subtitles extracted from covered remote .strm sources into one standard bottom-centre style scaled to the script canvas, removing override tags, positions, drawings and effects while keeping every event time and line. The same standard style is used for bounded ASS burn-in windows. Scripts that are not plain V4+ files are left unchanged. Existing caches change only when re-extracted. Recovery of covered extraction, cancellation, incomplete-output rejection and source-bound cache receipts are unchanged. Requires Jellyfin 12 and a full restart."
     targetAbi = '12.0.0.0'
     sourceUrl = "https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/download/v$Version/subtitle-guard_$Version.zip"
     checksum = $Checksum

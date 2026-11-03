@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>Jellyfin.Plugin.SubtitleGuard.Prototype</AssemblyName>
-    <Version>0.4.12</Version>
+    <Version>0.4.13</Version>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
@@ -16,6 +16,7 @@
     <Reference Include="MediaBrowser.MediaEncoding" HintPath="$(JellyfinBin)/MediaBrowser.MediaEncoding.dll" Private="false" Condition="'$(NativeHostChecks)' != 'true'" />
     <Compile Include="PluginEntry.cs" />
     <Compile Include="NativeExtractionGuard.cs" />
+    <Compile Include="AssStyle.cs" />
     <Compile Include="AssWindowCache.cs" />
     <Compile Include="WindowedBurnIn.cs" />
   </ItemGroup>

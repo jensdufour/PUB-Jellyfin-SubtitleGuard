@@ -51,6 +51,12 @@ if (args.Length == 1 && args[0] == "--coverage-parser")
     return;
 }
 
+if (args.Length == 1 && args[0] == "--ass-style")
+{
+    CheckAssStyle();
+    return;
+}
+
 await using var registered = args.Contains("--collectible") ? await RegisterCollectible() : null;
 await CheckNativeBehavior(registered is not null);
 
@@ -438,6 +444,33 @@ static async Task CheckNativeBehavior(bool registered)
         }
         Simulation.Result = Task.FromResult((0, string.Empty));
 
+        var assOutput = Path.Combine(root, "styled.ass");
+        Simulation.AssContent = string.Join('\n', "[Script Info]", "PlayResX:1920", "PlayResY:1080", "", "[V4+ Styles]", "Format: Name, Fontname, Fontsize",
+            "Style: Default,Arial,16", "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+            "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8\\b1}Hello") + "\n";
+        Simulation.Paths = [assOutput];
+        async Task ExtractAss(bool covered)
+        {
+            var previousRequest = strmRequest.Value;
+            strmRequest.Value = covered;
+            object?[] assScope = [source, null];
+            beginCoverage.Invoke(null, assScope);
+            try { await (Task)extract.Invoke(encoder, ["https://example.invalid/movie.mkv", "simulated", new[] { assOutput }, CancellationToken.None])!; }
+            finally { endCoverage.Invoke(null, [assScope[1]]); strmRequest.Value = previousRequest; }
+        }
+        await ExtractAss(false);
+        Check(File.ReadAllText(assOutput).Contains("Style: Default,Arial Unicode MS,16", StringComparison.Ordinal) && !File.Exists(assOutput + ".subtitleguard.coverage"),
+            "ASS from an uncovered extraction keeps its original style");
+        await ExtractAss(true);
+        var restyled = File.ReadAllText(assOutput);
+        Check(restyled.Contains("Style: Default,Arial Unicode MS,54,", StringComparison.Ordinal) && restyled.Contains(",,Hello", StringComparison.Ordinal) && !restyled.Contains("\\an8", StringComparison.Ordinal),
+            "ASS from a covered remote .strm extraction is restyled before publication");
+        Check(File.Exists(assOutput + ".subtitleguard.coverage") && !File.Exists(assOutput + ".subtitleguard.pending")
+            && Directory.GetFiles(root, "styled.ass.*.tmp").Length == 0,
+            "restyled ASS is published with a receipt that matches its final bytes and leaves no temporary files");
+        Simulation.AssContent = null;
+        Simulation.Paths = outputs;
+        Simulation.Result = Task.FromResult((0, string.Empty));
         var beginItem = typeof(NativeExtractionGuard).GetMethod("BeginItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
         var endItem = typeof(NativeExtractionGuard).GetMethod("EndItemScope", BindingFlags.NonPublic | BindingFlags.Static)!;
         var nativeOutputs = new List<string>();
@@ -699,6 +732,45 @@ static async Task Fails(Func<Task> action, string name)
     throw new InvalidOperationException("Expected failure: " + name);
 }
 
+static void CheckAssStyle()
+{
+    var normalize = typeof(NativeExtractionGuard).Assembly.GetType("SubtitleGuard.AssStyle", throwOnError: true)!
+        .GetMethod("Normalize", BindingFlags.NonPublic | BindingFlags.Static)!;
+    IReadOnlyList<string>? Run(params string[] lines) => (IReadOnlyList<string>?)normalize.Invoke(null, [lines]);
+    string[] Script(string resY, string style, params string[] events) =>
+    [
+        "[Script Info]", "Title: fixture", "ScriptType:V4.00+", "PlayResX:" + (resY == "288" ? "384" : "1920"), "PlayResY:" + resY, "",
+        "[V4+ Styles]", "Format: Name, Fontname, Fontsize, PrimaryColour", style, "",
+        "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text", .. events
+    ];
+
+    var real = Run(Script("1080", "Style: Default,Arial Unicode MS,16,&H00ffffff", "Dialogue: 0,0:00:03.00,0:00:05.00,Default,,0,0,0,,Plain line"))!;
+    Check(real.Contains("Style: Default,Arial Unicode MS,54,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,38,38,43,1"),
+        "size-16 style on a 1080 canvas becomes a 5 percent of height style");
+    Check(real.Contains("PlayResY: 1080") && real.Contains("PlayResX: 1920") && real.Contains("Title: fixture"), "canvas and unrelated script info are kept");
+    Check(real.Contains("Dialogue: 0,0:00:03.00,0:00:05.00,Default,,0,0,0,,Plain line"), "event timing and text are unchanged");
+
+    var small = Run(Script("288", "Style: Default,Arial,16,&H00ffffff", "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,x"))!;
+    Check(small.Contains("Style: Default,Arial Unicode MS,14,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,1,1,2,8,8,12,1"), "size scales with a different canvas height");
+
+    var styled = Run(Script("1080", "Style: Sign,Arial,90,&H0000ff00",
+        "Dialogue: 3,0:00:01.00,0:00:02.00,Sign,,0,0,0,fx,{\\pos(10,10)\\an8\\b1\\c&H0000FF&}Bold{\\i1}\\hitalic\\Nsecond",
+        "Dialogue: 0,0:00:03.00,0:00:04.00,Sign,,0,0,0,,{\\p1}m 0 0 l 10 0 10 10{\\p0}",
+        "Dialogue: 0,0:00:05.00,0:00:06.00,Sign,,0,0,0,,{\\fad(1,1)}",
+        "Dialogue: 0,0:00:07.00,0:00:08.00,Sign,,0,0,0,,Keep, with, commas"))!;
+    var dialogue = styled.Where(line => line.StartsWith("Dialogue:", StringComparison.Ordinal)).ToArray();
+    Check(dialogue.Length == 2 && dialogue[0] == "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,Bold italic\\Nsecond",
+        "override tags, positions, layers and effects are removed while line breaks stay");
+    Check(dialogue[1].EndsWith(",,Keep, with, commas", StringComparison.Ordinal), "commas in text survive");
+    Check(styled.Count(line => line.StartsWith("Style:", StringComparison.Ordinal)) == 1, "every event uses exactly one standard style");
+
+    Check(Run("[Script Info]", "Title: ssa", "[V4 Styles]", "[Events]") is null, "pre-V4+ scripts are left untouched");
+    Check(Run(Script("1080", "Style: Default,Arial,16,&H00ffffff").Select(line => line.StartsWith("Format: Layer", StringComparison.Ordinal) ? "Format: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text" : line).ToArray()) is null,
+        "a nonstandard event format is left untouched");
+    Check(Run(Script("1080", "Style: Default,Arial,16,&H00ffffff", "Dialogue: 0,0:00:01.00,truncated")) is null, "a malformed event line is left untouched");
+    Console.WriteLine("ASS style normalization checks passed.");
+}
+
 static void CheckCoverageParser()
 {
     var root = Path.Combine(Path.GetTempPath(), "subtitleguard-coverage-parser-" + Guid.NewGuid().ToString("N"));
@@ -854,12 +926,14 @@ public static class Simulation
     public static Queue<long> CoverageStartTicks { get; } = new();
     public static List<string> CoveragePaths { get; } = [];
     public static int ProcessCalls { get; set; }
+    public static string? AssContent { get; set; }
     public static string LastArguments { get; set; } = string.Empty;
     public static bool Process(string __0, ref Task<(int, string)> __result)
     {
         ProcessCalls++;
         LastArguments = __0;
-        foreach (var path in Paths) File.WriteAllText(path, "1\n00:00:01,000 --> 00:00:02,000\nPartial or complete fixture\n");
+        foreach (var path in Paths) File.WriteAllText(path, AssContent is not null && path.EndsWith(".ass", StringComparison.Ordinal)
+            ? AssContent : "1\n00:00:01,000 --> 00:00:02,000\nPartial or complete fixture\n");
         var match = Regex.Match(__0, "-f framecrc (?:\"([^\"]+)\"|(\\S+))");
         if (match.Success)
         {
