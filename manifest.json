@@ -8,6 +8,14 @@
     "owner": "jensdufour",
     "versions": [
       {
+        "version": "0.4.11",
+        "changelog": "SubtitleGuard 0.4.11: enables bounded native HTTP reconnect for covered remote .strm subtitle extraction. Matched recovered EOF diagnostics are accepted only with successful exit, complete same-read video coverage and no remaining failure. Cancellation, incomplete-output rejection, source-bound cache receipts and one outer retry remain. Optional windowed ASS HLS burn-in is unchanged. Requires Jellyfin 12 and a full restart.",
+        "targetAbi": "12.0.0.0",
+        "sourceUrl": "https://github.com/jensdufour/PUB-Jellyfin-SubtitleGuard/releases/download/v0.4.11/subtitle-guard_0.4.11.zip",
+        "checksum": "2aff1cd246e0e6ba1fc4d51a1fc1961a",
+        "timestamp": "2026-11-03T09:48:38Z"
+      },
+      {
         "version": "0.4.10",
         "changelog": "SubtitleGuard 0.4.10: validates same-read video coverage before publishing remote embedded subtitle extraction for local .strm items. Legacy .strm caches are revalidated on demand and fully covered results are source-bound in cache metadata. One bounded retry remains. Optional windowed ASS HLS burn-in and native cache guards remain. Requires Jellyfin 12 and a full restart.",
         "targetAbi": "12.0.0.0",
