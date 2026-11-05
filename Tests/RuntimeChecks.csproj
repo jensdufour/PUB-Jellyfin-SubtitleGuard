@@ -10,6 +10,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="NativeGuardChecks.cs" />
+    <Compile Include="WebUxChecks.cs" />
     <ProjectReference Include="../SubtitleGuard.csproj" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Jellyfin.Controller" Version="12.0.0" Condition="'$(NativeHostChecks)' != 'true'" />

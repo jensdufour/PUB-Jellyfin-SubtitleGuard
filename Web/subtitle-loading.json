@@ -1,0 +1,32 @@
+{
+  "filenamePattern": "^htmlVideoPlayer-plugin\\.[a-f0-9]+\\.chunk\\.js$",
+  "originalSha256": "eb20794d5051e092fe39373c8b265fcd60a05f43b61df0b212b3ebe70e52c748",
+  "patchedSha256": "8a43027e9b9c39c6998f8106fc96ef31e2f9c111130fd2482df66043f3c1ef6a",
+  "transformations": [
+    {
+      "Id": "4957a4ec-f7be-4c12-9eea-a1016f3ccf80",
+      "SearchText": "{key:\"renderSsaAss\",value:function(e,t,r){",
+      "ReplaceText": "{key:\"cancelAssPreparation\",value:function cancelAssPreparation() {\r\n    const load = this._subtitleGuardAssLoad;\r\n    if (!load) return;\r\n    this._subtitleGuardAssLoad = null;\r\n    load.controller.abort();\r\n    load.status.remove();\r\n}},{key:\"prepareAssForDisplay\",value:async function prepareAssForDisplay(video, track, item) {\r\n    if (!this._currentPlayOptions?.mediaSource?.IsRemote || track.IsExternal) {\r\n        return this.renderSsaAss(video, track, item);\r\n    }\r\n    this.cancelAssPreparation();\r\n    const status = document.createElement('div');\r\n    status.setAttribute('role', 'status');\r\n    status.setAttribute('aria-live', 'polite');\r\n    status.textContent = 'Preparing subtitles...';\r\n    status.style.cssText = 'position:absolute;bottom:80px;left:16px;right:16px;margin:auto;width:fit-content;max-width:calc(100% - 32px);padding:8px 12px;border-radius:4px;background:rgba(0,0,0,.8);color:white;font:inherit;font-size:14px;line-height:1.4;text-align:center;pointer-events:none;z-index:2';\r\n    const load = { controller: new AbortController(), status };\r\n    this._subtitleGuardAssLoad = load;\r\n    video.parentNode.appendChild(status);\r\n    try {\r\n        const response = await fetch(ne(track, item), { signal: load.controller.signal });\r\n        if (!response.ok) throw new Error('Subtitle preparation failed');\r\n        const content = await response.text();\r\n        if (this._subtitleGuardAssLoad !== load) return;\r\n        if (!/^\\[Events\\]\\s*$/m.test(content)) throw new Error('Invalid ASS subtitle response');\r\n        this.renderSsaAss(video, { ...track, SubtitleGuardContent: content, SubtitleGuardLoad: load }, item);\r\n        status.remove();\r\n    } catch {\r\n        if (this._subtitleGuardAssLoad === load) status.textContent = 'Subtitles unavailable';\r\n    }\r\n}},{key:\"renderSsaAss\",value:function(e,t,r,__subtitleGuard){__subtitleGuard=t.SubtitleGuardLoad;"
+    },
+    {
+      "Id": "a1bbfd7c-5908-4800-b27b-9cfd12b49896",
+      "SearchText": "return this.renderSsaAss(t,n,r),e.a(2);",
+      "ReplaceText": "return this.prepareAssForDisplay(t,n,r),e.a(2);"
+    },
+    {
+      "Id": "32427483-cdef-44f1-bc50-66d929e6e597",
+      "SearchText": "f={video:e,subUrl:ne(t,r),fonts:o,",
+      "ReplaceText": "f={video:e,subUrl:void 0===t.SubtitleGuardContent?ne(t,r):void 0,subContent:t.SubtitleGuardContent,fonts:o,"
+    },
+    {
+      "Id": "3adad4e9-862b-47d2-8d1d-b598208029f2",
+      "SearchText": "{key:\"destroyCustomTrack\",value:function(e,t){",
+      "ReplaceText": "{key:\"destroyCustomTrack\",value:function(e,t,__subtitleGuard){this.cancelAssPreparation();"
+    },
+    {
+      "Id": "ec207336-c61e-4018-a7e9-e678f55a7b3d",
+      "SearchText": "G(le,i,new s(f))",
+      "ReplaceText": "(void 0===__subtitleGuard||i._subtitleGuardAssLoad===__subtitleGuard)&&G(le,i,new (s)(f))"
+    }
+  ]
+}

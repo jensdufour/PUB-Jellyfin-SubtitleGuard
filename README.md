@@ -1,10 +1,54 @@
 # Subtitle Guard
 
-**0.4.13: native subtitle-cache guards, bounded native HTTP recovery,
-optional windowed ASS burn-in, and same-read coverage for remote `.strm` extraction.**
-Four production C# files. Native authentication, playback permissions, HLS routes
+**0.4.14: plugin-owned Web subtitle preparation feedback,
+native subtitle-cache guards, bounded native HTTP recovery, optional windowed
+ASS burn-in, and same-read coverage for remote `.strm` extraction.**
+Native authentication, playback permissions, HLS routes
 and encoder selection are retained. No new playback service, proxy, library scan,
 custom media downloader or replacement encoder is installed.
+
+## Plugin-Owned Web UX - 0.4.14
+
+Subtitle Guard now owns the remote embedded ASS/SSA loading UI in
+[Web/subtitle-loading.json](Web/subtitle-loading.json). The optional
+[WebSubtitleUx](WebSubtitleUx.cs) hosted service registers a runtime callback
+through File Transformation's public plugin API; it does not add saved rules
+to that plugin's configuration. File Transformation3.0.3 remains the response
+transport, not the owner of the subtitle behavior. Extraction guards work
+unchanged when that optional integration is unavailable.
+
+Web shows `Preparing subtitles...` during one guarded request, passes the completed
+text to native libass automatically, and shows `Subtitles unavailable` on failure.
+Stop/track changes cancel preparation and discard stale download/font callbacks.
+There is no automatic retry, new client timeout, cache purge or playback restart.
+Local/external subtitles, SubRip and native Android TV remain unchanged. This makes
+the existing extraction wait visible; it does not shorten it.
+
+The callback accepts only the checksum-pinned Web12.4player asset and verifies
+the transformed checksum before returning it. Unknown or partially matching assets
+are returned untouched, and already-transformed assets are unchanged. Revalidate
+after a Web upgrade rather than broadening the signatures blindly. Registration
+is removed on shutdown. No custom middleware, HTTP callback, npm dependency or
+replacement Web build is introduced.
+
+Focused checks:
+
+```bash
+dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin=/path/to/host/bin -- --web-ux /path/to/stock-player.chunk.js /tmp/candidate.chunk.js
+node Tests/test-web-subtitle-ux.cjs /path/to/stock-player.chunk.js /tmp/candidate.chunk.js
+```
+
+The release workflow downloads and verifies the official Web12.4package before
+these checks. They cover exact output parity, fail-closed checksum gates, runtime
+registration, shutdown cleanup, unavailable integration, visible states, deferred
+attachment and stale callbacks in both native font paths.
+
+Installing the package is not activation. Existing operator-configured subtitle
+rules must remain until the published package is activated. Remove only the
+five legacy subtitle IDs listed in the embedded
+definition after confirming runtime registration; preserve every unrelated rule.
+Then verify the same served player bytes with no saved subtitle rows. Package
+activation requires a full idle server restart; do not hot-load test DLLs.
 
 ## Native HTTP Recovery - 0.4.11
 

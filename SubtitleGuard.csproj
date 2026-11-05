@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>Jellyfin.Plugin.SubtitleGuard.Prototype</AssemblyName>
-    <Version>0.4.13</Version>
+    <Version>0.4.14</Version>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
@@ -19,6 +19,8 @@
     <Compile Include="AssStyle.cs" />
     <Compile Include="AssWindowCache.cs" />
     <Compile Include="WindowedBurnIn.cs" />
+    <Compile Include="WebSubtitleUx.cs" />
+    <EmbeddedResource Include="Web/subtitle-loading.json" LogicalName="SubtitleGuard.WebSubtitleUx.json" />
   </ItemGroup>
   <Target Name="RequireHostAssemblies" BeforeTargets="ResolveReferences">
     <Error Condition="!Exists('$(JellyfinBin)/MediaBrowser.MediaEncoding.dll')" Text="Set JellyfinBin to a Jellyfin 12 release bin directory." />

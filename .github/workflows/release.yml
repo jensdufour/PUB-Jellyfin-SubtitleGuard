@@ -77,6 +77,20 @@ jobs:
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --collectible
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --coverage-parser
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --coverage-contract "$FFMPEG_BIN"
+      - name: Verify plugin-owned Web subtitle UX
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --max-time 180 \
+            'https://repo.jellyfin.org/ubuntu/pool/main/j/jellyfin/jellyfin-web_12.4+ubu2404_all.deb' \
+            --output "$RUNNER_TEMP/jellyfin-web-12.4.deb"
+          echo "0da66acfc2da32490df576ed5fd9e95634dddfd5f1fd14dd735b31d1dcb7fcf7  $RUNNER_TEMP/jellyfin-web-12.4.deb" | sha256sum --check --strict
+          dpkg-deb --extract "$RUNNER_TEMP/jellyfin-web-12.4.deb" "$RUNNER_TEMP/jellyfin-web-12.4"
+          chunk="$RUNNER_TEMP/jellyfin-web-12.4/usr/share/jellyfin/web/htmlVideoPlayer-plugin.02b37b7cfd0e06696bd1.chunk.js"
+          candidate="$RUNNER_TEMP/subtitleguard-player.chunk.js"
+          host="$RUNNER_TEMP/jellyfin-host-12.4/usr/lib/jellyfin/bin"
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --web-ux "$chunk" "$candidate"
+          node Tests/test-web-subtitle-ux.cjs "$chunk" "$candidate"
       - name: Package
         id: package
         shell: pwsh

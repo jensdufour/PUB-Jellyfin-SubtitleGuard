@@ -27,6 +27,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SubtitleGuard;
 
+if (args.Length == 3 && args[0] == "--web-ux")
+{
+    await SubtitleGuard.Tests.WebUxChecks.Run(args[1], args[2]);
+    return;
+}
+
 if (args.Length == 2 && args[0] == "--hls-hooks")
 {
     await CheckHlsHooks(Path.GetFullPath(args[1]));
