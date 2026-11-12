@@ -167,6 +167,10 @@ public sealed class NativeExtractionGuard : IDisposable
         finally { File.Delete(temporary); }
     }
 
+    internal static bool IsReadyForPlayback(string cachePath, MediaSourceInfo source) =>
+        !File.Exists(cachePath + PendingSuffix)
+        && HasValidCoverageReceipt(cachePath, new ReadScope(source.Path, source.Id, source.ETag, source.RunTimeTicks.GetValueOrDefault()));
+
     private static bool HasValidCoverageReceipt(string cachePath, ReadScope source)
     {
         try

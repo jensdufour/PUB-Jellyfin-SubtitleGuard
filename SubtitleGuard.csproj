@@ -5,7 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>Jellyfin.Plugin.SubtitleGuard.Prototype</AssemblyName>
-    <Version>0.4.14</Version>
+    <Version>0.4.15</Version>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
@@ -19,6 +19,7 @@
     <Compile Include="AssStyle.cs" />
     <Compile Include="AssWindowCache.cs" />
     <Compile Include="WindowedBurnIn.cs" />
+    <Compile Include="PlaybackFirst.cs" />
     <Compile Include="WebSubtitleUx.cs" />
     <EmbeddedResource Include="Web/subtitle-loading.json" LogicalName="SubtitleGuard.WebSubtitleUx.json" />
   </ItemGroup>

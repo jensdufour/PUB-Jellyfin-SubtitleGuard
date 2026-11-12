@@ -21,6 +21,7 @@ using MediaBrowser.MediaEncoding.Subtitles;
 using MediaBrowser.Model.Dto;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.IO;
+using MediaBrowser.Model.Session;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -36,6 +37,12 @@ if (args.Length == 3 && args[0] == "--web-ux")
 if (args.Length == 2 && args[0] == "--hls-hooks")
 {
     await CheckHlsHooks(Path.GetFullPath(args[1]));
+    return;
+}
+
+if (args.Length == 2 && args[0] == "--playback-first")
+{
+    await CheckPlaybackFirst(Path.GetFullPath(args[1]));
     return;
 }
 
@@ -65,6 +72,113 @@ if (args.Length == 1 && args[0] == "--ass-style")
 
 await using var registered = args.Contains("--collectible") ? await RegisterCollectible() : null;
 await CheckNativeBehavior(registered is not null);
+
+static async Task CheckPlaybackFirst(string host)
+{
+    AssemblyLoadContext.Default.Resolving += (_, name) =>
+        File.Exists(Path.Combine(host, name.Name + ".dll"))
+            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(host, name.Name + ".dll")) : null;
+    AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(host, "Jellyfin.Api.dll"));
+    var type = typeof(NativeExtractionGuard).Assembly.GetType("SubtitleGuard.PlaybackFirst", throwOnError: true)!;
+    var root = Path.Combine(Path.GetTempPath(), "subtitleguard-playback-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(root);
+    var path = Path.Combine(root, "2.ass");
+    var manager = new Mock<IPathManager>();
+    manager.Setup(value => value.GetSubtitlePath(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>())).Returns(path);
+    var logger = Activator.CreateInstance(typeof(NullLogger<>).MakeGenericType(type))!;
+    var instance = (IHostedService)Activator.CreateInstance(type, [manager.Object, logger])!;
+    var negotiate = type.GetMethod("Negotiate", BindingFlags.NonPublic | BindingFlags.Static)!;
+    var method = Type.GetType("Jellyfin.Api.Helpers.MediaInfoHelper, Jellyfin.Api", throwOnError: true)!
+        .GetMethod("SetDeviceSpecificData")!;
+    var item = new Movie { Id = Guid.NewGuid(), Path = "/library/remote.strm", IsShortcut = true };
+    var subtitle = new MediaStream { Index = 2, Type = MediaStreamType.Subtitle, Codec = "ass", IsForced = true };
+    var source = new MediaSourceInfo
+    {
+        Id = "fixture", Path = "https://example.invalid/fixture.mkv", IsRemote = true,
+        ETag = "etag-v1", RunTimeTicks = TimeSpan.FromMinutes(5).Ticks,
+        DefaultSubtitleStreamIndex = 2, MediaStreams = [subtitle]
+    };
+    try
+    {
+        await instance.StartAsync(CancellationToken.None);
+        Check(Harmony.GetPatchInfo(method)?.Owners.Contains("jensdufour.subtitleguard.playback-first") == true,
+            "playback-first installs on the exact native negotiation method");
+        Decide(null, -1, "cold default forced ASS is disabled before URL generation");
+        Decide(2, -1, "explicit cold ASS also cannot block playback");
+        source.Container = "mkv";
+        source.Protocol = MediaProtocol.Http;
+        source.SupportsDirectPlay = true;
+        source.MediaStreams =
+        [
+            new MediaStream { Index = 0, Type = MediaStreamType.Video, Codec = "h264", Width = 1920, Height = 1080 },
+            new MediaStream { Index = 1, Type = MediaStreamType.Audio, Codec = "aac", Channels = 2 },
+            subtitle
+        ];
+        var plan = new StreamBuilder(Mock.Of<IMediaEncoder>(), NullLogger.Instance).GetOptimalVideoStream(new MediaOptions
+        {
+            DeviceId = "fixture-device", Context = EncodingContext.Streaming,
+            ItemId = item.Id, MediaSourceId = source.Id, MediaSources = [source], SubtitleStreamIndex = -1,
+            Profile = new DeviceProfile
+            {
+                DirectPlayProfiles = [new DirectPlayProfile { Container = "mkv", VideoCodec = "h264", AudioCodec = "aac", Type = DlnaProfileType.Video }],
+                SubtitleProfiles = [new SubtitleProfile { Format = "ass", Method = SubtitleDeliveryMethod.Encode }]
+            }
+        });
+        Check(plan is not null && plan.SubtitleStreamIndex == -1 && plan.PlayMethod == PlayMethod.DirectPlay,
+            "native stream planning preserves subtitles-Off and permits direct playback");
+        Decide(-1, -1, "explicit subtitles-Off is preserved");
+        Check(subtitle.IsForced && source.MediaStreams.Contains(subtitle), "track metadata remains available and forced flag is preserved");
+        File.WriteAllText(path, "partial fixture");
+        Decide(2, -1, "nonempty cache without coverage is not ready");
+        var coverageType = typeof(NativeExtractionGuard).GetNestedType("CoverageContext", BindingFlags.NonPublic)!;
+        var context = Activator.CreateInstance(coverageType, [source.RunTimeTicks!.Value, 0, source.Id, source.ETag])!;
+        typeof(NativeExtractionGuard).GetMethod("WriteCoverageReceipt", BindingFlags.NonPublic | BindingFlags.Static)!
+            .Invoke(null, [path, context]);
+        Decide(2, 2, "validated ready cache retains selected subtitles");
+        File.WriteAllText(path + ".subtitleguard.pending", "1");
+        Decide(2, -1, "pending cache cannot delay playback");
+        File.Delete(path + ".subtitleguard.pending");
+        source.ETag = "etag-v2";
+        Decide(2, -1, "stale source receipt skips subtitles");
+        source.ETag = "etag-v1";
+        File.AppendAllText(path, "changed");
+        Decide(2, -1, "modified cache skips subtitles");
+        File.WriteAllText(path, "");
+        Decide(2, -1, "empty cache skips subtitles");
+        source.IsRemote = false;
+        Decide(2, 2, "local media is unchanged");
+        source.IsRemote = true;
+        subtitle.IsExternal = true;
+        Decide(2, 2, "external subtitles are unchanged");
+        subtitle.IsExternal = false;
+        subtitle.Codec = "subrip";
+        Decide(2, 2, "non-ASS tracks remain outside this bounded policy");
+        subtitle.Codec = "SSA";
+        Decide(2, -1, "SSA codec matching is case insensitive");
+        item.IsShortcut = false;
+        Decide(2, 2, "non-shortcut items are unchanged");
+        item.IsShortcut = true;
+        manager.Setup(value => value.GetSubtitlePath(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>())).Returns((string?)null);
+        Decide(2, -1, "missing cache path fails open for video");
+        manager.Setup(value => value.GetSubtitlePath(It.IsAny<string>(), It.IsAny<int>(), It.IsAny<string>())).Throws<IOException>();
+        Decide(2, -1, "cache I/O failure fails open for video");
+
+        void Decide(int? selected, int expected, string message)
+        {
+            source.DefaultSubtitleStreamIndex = 2;
+            object?[] parameters = [item, source, selected];
+            negotiate.Invoke(null, parameters);
+            Check((int?)parameters[2] == expected && source.DefaultSubtitleStreamIndex == (expected == -1 && selected != -1 ? -1 : 2), message);
+        }
+    }
+    finally
+    {
+        await instance.StopAsync(CancellationToken.None);
+        Check(Harmony.GetPatchInfo(method)?.Owners.Contains("jensdufour.subtitleguard.playback-first") != true,
+            "shutdown removes the playback-first hook");
+        Directory.Delete(root, true);
+    }
+}
 
 static async Task CheckHlsHooks(string host)
 {
@@ -287,6 +401,7 @@ static async Task<ServiceProvider> RegisterCollectible()
     Check(plugin.IsCollectible, "plugin is loaded in Jellyfin's collectible context");
     var services = new ServiceCollection();
     services.AddLogging();
+    services.AddSingleton(Mock.Of<IPathManager>());
     var registrator = (IPluginServiceRegistrator)Activator.CreateInstance(plugin.GetType("SubtitleGuard.Registrator")!)!;
     registrator.RegisterServices(services, null!);
     var provider = services.BuildServiceProvider();

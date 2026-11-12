@@ -42,6 +42,7 @@ jobs:
           echo "JELLYFIN_BIN=$RUNNER_TEMP/jellyfin-host/usr/lib/jellyfin/bin" >> "$GITHUB_ENV"
       - name: Verify native guard
         run: |
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --playback-first "$JELLYFIN_BIN"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --collectible
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:JellyfinBin="$JELLYFIN_BIN" -- --coverage-parser
@@ -62,6 +63,7 @@ jobs:
           dpkg-deb --extract "$RUNNER_TEMP/jellyfin-server-12.1.deb" "$RUNNER_TEMP/jellyfin-host-12.1"
           cp -a Tests/bin/Release/net10.0 "$RUNNER_TEMP/checks-12.1"
           cp "$RUNNER_TEMP/jellyfin-host-12.1/usr/lib/jellyfin/bin/"*.dll "$RUNNER_TEMP/checks-12.1/"
+          dotnet "$RUNNER_TEMP/checks-12.1/RuntimeChecks.dll" --playback-first "$RUNNER_TEMP/jellyfin-host-12.1/usr/lib/jellyfin/bin"
           dotnet "$RUNNER_TEMP/checks-12.1/RuntimeChecks.dll" --collectible
       - name: Verify Jellyfin 12.4 native playlist clock
         shell: bash
@@ -73,6 +75,7 @@ jobs:
           echo "88b9ff091677588686644d8da61c21c2e9fbd9bb99296b380e9c0efa8ec68285  $RUNNER_TEMP/jellyfin-server-12.4.deb" | sha256sum --check --strict
           dpkg-deb --extract "$RUNNER_TEMP/jellyfin-server-12.4.deb" "$RUNNER_TEMP/jellyfin-host-12.4"
           host="$RUNNER_TEMP/jellyfin-host-12.4/usr/lib/jellyfin/bin"
+          dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --playback-first "$host"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --hls-hooks "$host"
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --collectible
           dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin="$host" -- --coverage-parser

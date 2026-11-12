@@ -1,6 +1,26 @@
 # Subtitle Guard
 
-**0.4.14: plugin-owned Web subtitle preparation feedback,
+## Playback-First Negotiation - 0.4.15
+
+Playback negotiation skips selected remote embedded ASS/SSA subtitles from local
+`.strm` shortcuts unless their native cache has a valid source-bound coverage
+receipt and no pending marker. Missing, empty, changed or unreadable caches select
+subtitles Off before native stream planning and URL generation. This does not
+wait, extract in the background, change saved preferences or retry playback.
+Ready subtitles retain the native path; local media, external subtitles and other
+subtitle codecs are unchanged. This is a bounded ASS/SSA policy, not a universal
+fallback for every subtitle format or a remedy for video-source outages.
+
+Native extraction and incomplete-cache guards remain intact. Tracks skipped on a
+cold cache do not become ready through this policy alone; independent successful
+extraction is still needed. Activation requires compatibility checks and an idle
+full server restart.
+
+```powershell
+dotnet run --project Tests/RuntimeChecks.csproj -c Release -p:NativeHostChecks=true -p:JellyfinBin=/path/to/host/bin -- --playback-first /path/to/host/bin
+```
+
+**0.4.15: playback-first remote ASS/SSA negotiation, plugin-owned Web subtitle preparation feedback,
 native subtitle-cache guards, bounded native HTTP recovery, optional windowed
 ASS burn-in, and same-read coverage for remote `.strm` extraction.**
 Native authentication, playback permissions, HLS routes

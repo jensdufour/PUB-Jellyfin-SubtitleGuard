@@ -37,6 +37,7 @@ public sealed class Registrator : IPluginServiceRegistrator
         services.AddSingleton(_ => guard);
         services.AddHostedService<GuardStatus>();
         services.AddHostedService<WindowedBurnIn>();
+        services.AddHostedService<PlaybackFirst>();
         services.AddHostedService<WebSubtitleUx>();
     }
 }
